@@ -9,7 +9,7 @@ shopeeRouter.get("/shopee", validateShopeeQuery, async (req, res, next) => {
   const dealId = req.query.dealId as string;
 
   try {
-    const data = await getProductDetail({ storeId, dealId });
+    const data = await getProductDetail({ storeId, dealId }, String(req.id));
     res.status(200).json(data);
   } catch (err) {
     next(err);

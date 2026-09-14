@@ -1,11 +1,5 @@
 import { logger } from "./logger";
-
-export class AntiBotError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AntiBotError";
-  }
-}
+import { isScrapeError, ScrapeError, type ScrapeErrorType } from "./errors";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,42 +11,74 @@ function backoffMs(attempt: number): number {
   return base + jitter;
 }
 
-interface RetryOptions {
-  /** Called once when an AntiBotError is hit, before retrying (e.g. to refresh session). */
-  onAntiBotDetected?: () => Promise<void>;
-  maxNetworkRetries?: number;
-  maxAntiBotRetries?: number;
+interface RetryPolicy {
+  maxRetries: number;
+  /** Whether this error type warrants a full session (browser) refresh before retrying. */
+  needsSessionRefresh: boolean;
 }
 
 /**
- * Retries `fn`, distinguishing plain network/timeout failures (retried immediately with
- * backoff) from anti-bot signals (403/429/captcha) which trigger a session refresh first,
- * since retrying with a stale session would just fail again.
+ * Per-type retry policy. TRAFFIC_VERIFICATION gets zero retries deliberately: refreshing
+ * the session and hammering Shopee again after its risk-control system has already flagged
+ * the traffic is suspected to worsen the underlying risk/velocity score rather than help.
+ * Callers should mark the session/proxy as blocked and let a human decide whether to retry
+ * later, rather than looping automatically.
  */
-export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
-  const maxNetworkRetries = options.maxNetworkRetries ?? 3;
-  const maxAntiBotRetries = options.maxAntiBotRetries ?? 2;
+const RETRY_POLICIES: Record<ScrapeErrorType, RetryPolicy> = {
+  NETWORK_ERROR: { maxRetries: 3, needsSessionRefresh: false },
+  TIMEOUT: { maxRetries: 2, needsSessionRefresh: false },
+  HTTP_403: { maxRetries: 1, needsSessionRefresh: true },
+  HTTP_429: { maxRetries: 1, needsSessionRefresh: true },
+  TRAFFIC_VERIFICATION: { maxRetries: 0, needsSessionRefresh: false },
+  INVALID_RESPONSE: { maxRetries: 1, needsSessionRefresh: true },
+  SESSION_EXPIRED: { maxRetries: 1, needsSessionRefresh: true },
+  PROXY_FAILURE: { maxRetries: 2, needsSessionRefresh: false },
+  BROWSER_FAILURE: { maxRetries: 1, needsSessionRefresh: true },
+};
 
-  let networkAttempts = 0;
-  let antiBotAttempts = 0;
+interface RetryOptions {
+  /** Called before retrying an error type whose policy needs a fresh session. */
+  onSessionRefresh?: () => Promise<void>;
+  /** Called once per PROXY_FAILURE occurrence, so the caller can rotate/quarantine it. */
+  onProxyFailure?: (err: ScrapeError) => void;
+}
+
+/** Retries `fn`, applying a distinct backoff/refresh policy depending on the failure's ScrapeErrorType. */
+export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
+  const attemptsByType: Partial<Record<ScrapeErrorType, number>> = {};
 
   for (;;) {
     try {
       return await fn();
     } catch (err) {
-      if (err instanceof AntiBotError) {
-        antiBotAttempts += 1;
-        if (antiBotAttempts > maxAntiBotRetries) throw err;
-        logger.warn({ attempt: antiBotAttempts }, "Anti-bot signal detected, refreshing session before retry");
-        await options.onAntiBotDetected?.();
-        await sleep(backoffMs(antiBotAttempts));
-        continue;
+      const scrapeErr = isScrapeError(err)
+        ? err
+        : new ScrapeError("NETWORK_ERROR", err instanceof Error ? err.message : String(err));
+      const policy = RETRY_POLICIES[scrapeErr.type];
+      const attempt = (attemptsByType[scrapeErr.type] ?? 0) + 1;
+      attemptsByType[scrapeErr.type] = attempt;
+
+      if (attempt > policy.maxRetries) {
+        logger.error(
+          { type: scrapeErr.type, attempt, maxRetries: policy.maxRetries },
+          "Exhausted retries for error type, giving up"
+        );
+        throw scrapeErr;
       }
 
-      networkAttempts += 1;
-      if (networkAttempts > maxNetworkRetries) throw err;
-      logger.warn({ attempt: networkAttempts, err: (err as Error).message }, "Request failed, retrying");
-      await sleep(backoffMs(networkAttempts));
+      logger.warn(
+        { type: scrapeErr.type, attempt, maxRetries: policy.maxRetries, message: scrapeErr.message },
+        "Retrying after error"
+      );
+
+      if (scrapeErr.type === "PROXY_FAILURE") {
+        options.onProxyFailure?.(scrapeErr);
+      }
+      if (policy.needsSessionRefresh) {
+        await options.onSessionRefresh?.();
+      }
+
+      await sleep(backoffMs(attempt));
     }
   }
 }

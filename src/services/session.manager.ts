@@ -1,16 +1,21 @@
-import { addExtra } from "playwright-extra";
-import { chromium as rebrowserChromium } from "rebrowser-playwright";
 import type { Browser, BrowserContext } from "rebrowser-playwright";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { logger } from "../lib/logger";
-import { AntiBotError } from "../lib/retry";
+import { ScrapeError } from "../lib/errors";
 import { parseProxyForPlaywright, proxyManager } from "./proxy.manager";
+import {
+  getConfiguredBrowserEngine,
+  applyLanguageCookies,
+  dismissLanguageInterstitial,
+  warmupHomepage,
+  isWarmupEnabled,
+  blockStaticAssets,
+  isResourceBlockingEnabled,
+  isTrafficVerificationWall,
+  CircuitBreaker,
+} from "../techniques";
 import type { ShopeeProductParams, ShopeeSession } from "../types/shopee";
 
-// rebrowser-playwright patches the CDP Runtime.enable leak that lets sites fingerprint
-// Playwright-driven Chromium even with stealth plugins applied (see rebrowser-patches).
-const chromium = addExtra(rebrowserChromium);
-chromium.use(StealthPlugin());
+const chromium = getConfiguredBrowserEngine();
 
 const HEADLESS = process.env.HEADLESS !== "false";
 
@@ -28,7 +33,11 @@ const CHROME_EXECUTABLE_PATH =
 const SESSION_TTL_MS = Number(process.env.SESSION_REFRESH_INTERVAL_MS ?? 10 * 60 * 1000);
 const NAV_TIMEOUT_MS = 30_000;
 
-// Experimental (PERSISTENT_PROFILE=true): reuse one long-lived browser profile (cookies,
+// Technique #12: after a session hits Shopee's traffic-verification wall, don't
+// immediately try to bootstrap that same product again — back off for a cooldown period.
+const BLOCKED_COOLDOWN_MS = Number(process.env.BLOCKED_COOLDOWN_MS ?? 5 * 60 * 1000);
+
+// Bonus technique (PERSISTENT_PROFILE=true): reuse one long-lived browser profile (cookies,
 // localStorage, IndexedDB) across all bootstraps instead of a fresh context every time —
 // closer to how a real returning visitor looks, rather than a new incognito-like session
 // per request. Off by default since it hasn't been confirmed to change outcomes and trades
@@ -47,28 +56,35 @@ function sessionKey(params: ShopeeProductParams): string {
 class SessionManager {
   private browser: Browser | null = null;
   private persistentContext: BrowserContext | null = null;
-  // Shopee ties session validity closely to the specific product page that was navigated
-  // to, so sessions are cached per storeId/dealId rather than shared globally.
+  // Technique #4/#10: Shopee ties session validity closely to the specific product page
+  // that was navigated to, so sessions are cached per storeId/dealId rather than shared
+  // globally, and the proxy that built a session is pinned on it for reuse.
   private cache = new Map<string, ShopeeSession>();
   private bootstrapping = new Map<string, Promise<ShopeeSession>>();
+  private circuitBreaker = new CircuitBreaker(BLOCKED_COOLDOWN_MS);
 
   private async getBrowser(): Promise<Browser> {
     if (this.browser?.isConnected()) return this.browser;
 
-    const proxyUrl = proxyManager.getProxy();
     // playwright-extra's bundled types resolve against the hoisted top-level playwright-core,
     // which is a structurally-near-identical but nominally distinct type from rebrowser-playwright's.
     this.browser = (await chromium.launch({
       headless: HEADLESS,
       executablePath: CHROME_EXECUTABLE_PATH,
-      proxy: proxyUrl ? parseProxyForPlaywright(proxyUrl) : undefined,
     })) as unknown as Browser;
-    logger.info({ usingProxy: Boolean(proxyUrl) }, "Playwright browser launched");
+    logger.info("Playwright browser launched");
     return this.browser;
   }
 
-  /** Returns a context to bootstrap in, plus whether the caller should close it afterwards. */
-  private async getContext(): Promise<{ context: BrowserContext; ephemeral: boolean }> {
+  /**
+   * Returns a context to bootstrap in, the proxy URL it's using (if any), and whether the
+   * caller should close it afterwards. Proxy is chosen fresh per call and applied at the
+   * *context* level (not the shared browser instance) so that: (a) every session can get
+   * its own proxy pick even though the browser process is shared, and (b) the exact proxy
+   * used here can be recorded on the session and reused for its axios follow-up calls
+   * (technique #10 — sticky proxy consistent per-session).
+   */
+  private async getContext(): Promise<{ context: BrowserContext; ephemeral: boolean; proxyUrl: string | null }> {
     if (PERSISTENT_PROFILE) {
       if (!this.persistentContext) {
         const proxyUrl = proxyManager.getProxy();
@@ -82,23 +98,85 @@ class SessionManager {
         })) as unknown as BrowserContext;
         logger.info({ usingProxy: Boolean(proxyUrl), profileDir: PROFILE_DIR }, "Persistent browser profile launched");
       }
-      return { context: this.persistentContext, ephemeral: false };
+      // Persistent mode inherently pins one proxy for the profile's whole lifetime — there's
+      // no per-session proxy to report back here beyond whatever was picked at launch.
+      return { context: this.persistentContext, ephemeral: false, proxyUrl: null };
     }
 
+    const proxyUrl = proxyManager.getProxy();
+    const context = await this.createEphemeralContext(proxyUrl);
+    return { context, ephemeral: true, proxyUrl };
+  }
+
+  private async createEphemeralContext(proxyUrl: string | null): Promise<BrowserContext> {
     const browser = await this.getBrowser();
-    const context = await browser.newContext({
+    return browser.newContext({
       locale: "zh-TW",
       timezoneId: "Asia/Taipei",
       viewport: { width: 1366, height: 768 },
+      proxy: proxyUrl ? parseProxyForPlaywright(proxyUrl) : undefined,
     });
-    return { context, ephemeral: true };
+  }
+
+  /**
+   * Technique #11 (IN_BROWSER_FETCH=true): instead of replaying the captured session via
+   * axios (a plain Node.js TLS/HTTP2 client), fetch get_pc/get_rw directly inside a real
+   * Chromium page via page.evaluate(). This eliminates any TLS/HTTP2 fingerprint mismatch
+   * between the browser that established the session and the client that reuses it — a
+   * mismatch flagged as a likely contributor to the traffic-verification wall. Reuses the
+   * session's own `proxyUrl` (not a fresh pick) so the exit IP matches what the cookies
+   * were issued for.
+   */
+  async fetchInBrowser(url: string, session: ShopeeSession): Promise<{ status: number; body: string }> {
+    let context: BrowserContext | null = null;
+    let ephemeral = true;
+
+    try {
+      if (PERSISTENT_PROFILE) {
+        const ctx = await this.getContext();
+        context = ctx.context;
+        ephemeral = false;
+      } else {
+        context = await this.createEphemeralContext(session.proxyUrl);
+      }
+
+      const cookies = session.cookieHeader
+        .split(";")
+        .map((pair) => pair.trim())
+        .filter(Boolean)
+        .map((pair) => {
+          const idx = pair.indexOf("=");
+          return { name: pair.slice(0, idx), value: pair.slice(idx + 1), domain: ".shopee.tw", path: "/" };
+        });
+      await context.addCookies(cookies);
+
+      const page = await context.newPage();
+      try {
+        const result = await page.evaluate(
+          async ({ fetchUrl, headers }) => {
+            const res = await fetch(fetchUrl, { headers, credentials: "include" });
+            return { status: res.status, body: await res.text() };
+          },
+          { fetchUrl: url, headers: session.headers }
+        );
+        return result;
+      } finally {
+        await page.close().catch(() => undefined);
+      }
+    } finally {
+      if (ephemeral) {
+        await context?.close().catch(() => undefined);
+      }
+    }
   }
 
   /** Returns a cached session for this exact product if still fresh, otherwise bootstraps a new one. */
   async getValidSession(params: ShopeeProductParams): Promise<ShopeeSession> {
     const key = sessionKey(params);
+    this.circuitBreaker.assertNotBlocked(key);
+
     const cached = this.cache.get(key);
-    if (cached && Date.now() - cached.capturedAt < SESSION_TTL_MS) {
+    if (cached && cached.status !== "blocked" && Date.now() - cached.capturedAt < SESSION_TTL_MS) {
       return cached;
     }
     return this.refresh(params);
@@ -107,6 +185,8 @@ class SessionManager {
   /** Forces a fresh session bootstrap for this product (deduped per key). */
   async refresh(params: ShopeeProductParams): Promise<ShopeeSession> {
     const key = sessionKey(params);
+    this.circuitBreaker.assertNotBlocked(key);
+
     const inFlight = this.bootstrapping.get(key);
     if (inFlight) return inFlight;
 
@@ -117,29 +197,42 @@ class SessionManager {
     return promise;
   }
 
+  /** Records a successful axios call against an already-bootstrapped session. */
+  recordSuccess(params: ShopeeProductParams): void {
+    const session = this.cache.get(sessionKey(params));
+    if (session) session.successCount += 1;
+  }
+
+  /** Records a failed axios call and degrades the session's status if it keeps failing. */
+  recordError(params: ShopeeProductParams): void {
+    const session = this.cache.get(sessionKey(params));
+    if (!session) return;
+    session.errorCount += 1;
+    if (session.status === "healthy" && session.errorCount >= 2) {
+      session.status = "degraded";
+    }
+  }
+
   private async bootstrap(params: ShopeeProductParams): Promise<ShopeeSession> {
-    logger.info({ params, persistentProfile: PERSISTENT_PROFILE }, "Bootstrapping fresh Shopee session via headless browser");
+    const key = sessionKey(params);
+    const previousRefreshCount = this.cache.get(key)?.refreshCount ?? 0;
+    logger.info(
+      { params, persistentProfile: PERSISTENT_PROFILE, refreshCount: previousRefreshCount + 1 },
+      "Bootstrapping fresh Shopee session via headless browser"
+    );
     let context: BrowserContext | null = null;
     let ephemeral = true;
+    let proxyUrl: string | null = null;
     let page: Awaited<ReturnType<BrowserContext["newPage"]>> | null = null;
 
     try {
-      ({ context, ephemeral } = await this.getContext());
+      ({ context, ephemeral, proxyUrl } = await this.getContext());
       page = await context.newPage();
       const p = page;
 
-      // Optional: skip loading images/fonts/stylesheets to save bandwidth on paid per-GB
-      // proxies. Off by default — Shopee's frontend JS can observe that <img>/font elements
-      // never fire their load event, which is itself an atypical, potentially bot-flagging
-      // signal. Only enable this once IP/proxy quality is confirmed sufficient on its own.
-      if (process.env.BLOCK_STATIC_ASSETS === "true") {
-        const BLOCKED_RESOURCE_TYPES = new Set(["image", "stylesheet", "font", "media"]);
-        await p.route("**/*", (route) => {
-          if (BLOCKED_RESOURCE_TYPES.has(route.request().resourceType())) {
-            return route.abort();
-          }
-          return route.continue();
-        });
+      // Technique #9 (opsional)
+      if (isResourceBlockingEnabled()) {
+        await blockStaticAssets(p);
       }
 
       const captured: { headers: Record<string, string> | null; response: unknown | null } = {
@@ -153,42 +246,31 @@ class SessionManager {
         }
       });
 
-      // Preempt Shopee's first-visit language/region interstitial, which otherwise blocks
-      // the real product page (and its get_pc/get_rw call) from ever loading.
-      await context
-        .addCookies([
-          { name: "language", value: "zh-Hant", domain: ".shopee.tw", path: "/" },
-          { name: "_lang", value: "zh-Hant", domain: ".shopee.tw", path: "/" },
-        ])
-        .catch(() => undefined);
+      // Technique #3: preempt the first-visit language/region interstitial.
+      await applyLanguageCookies(context);
 
       const url = `https://shopee.tw/a-i.${params.storeId}.${params.dealId}`;
 
-      // Experimental (NAVIGATION_STRATEGY=warmup): visit the homepage first and idle briefly
-      // before navigating to the product page, to look like an organic browsing session
-      // rather than a bot deep-linking straight into a product URL. Off by default since
-      // it roughly doubles bootstrap time and hasn't been confirmed to change outcomes.
-      if (process.env.NAVIGATION_STRATEGY === "warmup") {
-        await p.goto("https://shopee.tw/", { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
-        await p.mouse.move(200 + Math.random() * 400, 200 + Math.random() * 300);
-        await p.waitForTimeout(1500 + Math.random() * 2000);
+      // Technique #7 (opsional)
+      if (isWarmupEnabled()) {
+        await warmupHomepage(p);
       }
 
-      await p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+      await p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((err) => {
+        throw new ScrapeError("BROWSER_FAILURE", `page.goto failed: ${(err as Error).message}`);
+      });
 
-      // Best-effort: if a language-selection interstitial still appears, dismiss it by
-      // clicking the Traditional Chinese / Taiwan option so the actual product page loads.
-      await p
-        .locator("text=/繁體中文|台灣|Taiwan/i")
-        .first()
-        .click({ timeout: 5000 })
-        .catch(() => undefined);
+      // Technique #3 fallback: dismiss the interstitial if it still appeared.
+      await dismissLanguageInterstitial(p);
 
-      // Shopee's anti-bot system redirects suspected bot/velocity-flagged traffic here,
-      // disguised as a login wall. Detect it immediately instead of waiting out the full
-      // navigation timeout for a get_pc/get_rw call that will never come.
-      if (p.url().includes("/verify/traffic")) {
-        throw new AntiBotError(`Redirected to Shopee traffic verification wall: ${p.url()}`);
+      // Technique #12: detect the traffic-verification wall immediately instead of waiting
+      // out the full navigation timeout for a get_pc/get_rw call that will never come, and
+      // trip the circuit breaker right away so we don't immediately re-bootstrap it.
+      if (isTrafficVerificationWall(p.url())) {
+        this.circuitBreaker.trip(key);
+        const existing = this.cache.get(key);
+        if (existing) existing.status = "blocked";
+        throw new ScrapeError("TRAFFIC_VERIFICATION", `Redirected to Shopee traffic verification wall: ${p.url()}`);
       }
 
       const pdpResponse = await p
@@ -196,10 +278,7 @@ class SessionManager {
           timeout: NAV_TIMEOUT_MS,
         })
         .catch(() => {
-          logger.warn(
-            { finalUrl: p.url() },
-            "Timed out waiting for get_pc/get_rw network call during bootstrap"
-          );
+          logger.warn({ finalUrl: p.url() }, "Timed out waiting for get_pc/get_rw network call during bootstrap");
           return null;
         });
 
@@ -220,7 +299,7 @@ class SessionManager {
       const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 
       if (!captured.headers) {
-        throw new Error("Failed to capture Shopee PDP request headers during session bootstrap");
+        throw new ScrapeError("BROWSER_FAILURE", "Failed to capture Shopee PDP request headers during session bootstrap");
       }
 
       const session: ShopeeSession = {
@@ -228,9 +307,15 @@ class SessionManager {
         headers: captured.headers,
         capturedAt: Date.now(),
         capturedResponse: captured.response,
+        proxyUrl,
+        status: "healthy",
+        successCount: 0,
+        errorCount: 0,
+        refreshCount: previousRefreshCount + 1,
       };
-      this.cache.set(sessionKey(params), session);
-      logger.info({ params }, "Shopee session bootstrap succeeded");
+      this.cache.set(key, session);
+      this.circuitBreaker.clear(key);
+      logger.info({ params, proxyUrl }, "Shopee session bootstrap succeeded");
       return session;
     } finally {
       // Persistent contexts stay open across bootstraps (that's the point) — only close

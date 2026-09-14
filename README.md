@@ -2,7 +2,7 @@
 
 REST API (TypeScript) yang mengambil data detail produk dari Shopee Taiwan (`get_pc`/`get_rw`) dengan pendekatan **hybrid**: browser headless (Playwright + stealth) dipakai jarang untuk membangun sesi/cookie/header yang valid, sedangkan mayoritas request produk dilayani lewat HTTP client ringan (axios) yang menggunakan ulang sesi tersebut — menyeimbangkan ketahanan terhadap anti-bot dengan skalabilitas.
 
-> **Status:** Kode lengkap, type-check/lint/build bersih, dan **terbukti berhasil sekali secara end-to-end** mengambil data produk asli lengkap sesuai skema `get_pc`. Setelah itu, dua item contoh yang dipakai berulang kali selama development memicu sistem anti-bot Shopee (`/verify/traffic/error`, kode `90309999`) yang terbukti persisten lintas IP/jaringan/proxy (lihat [Metode & Eksperimen yang Dicoba](#metode--eksperimen-yang-dicoba) — 9 pendekatan berbeda didokumentasikan dengan hasilnya). Arsitektur sudah mengimplementasikan praktik standar untuk high-quality scraping (session management, retry-aware anti-bot detection, proxy pluggable sticky/rotating, resource optimization); uji volume 200+ item yang konsisten kemungkinan besar butuh item/produk yang belum pernah "dibakar" testing berulang dan/atau proxy residential premium.
+> **Status:** Kode lengkap, type-check/lint/build bersih, dan **terbukti berhasil sekali secara end-to-end** mengambil data produk asli lengkap sesuai skema `get_pc`. Setelah itu, dua item contoh yang dipakai berulang kali selama development memicu sistem anti-bot Shopee (`/verify/traffic/error`, kode `90309999`) yang terbukti persisten lintas IP/jaringan/proxy (lihat [Metode & Eksperimen yang Dicoba](#metode--eksperimen-yang-dicoba) — 9 pendekatan didokumentasikan). Setelah itu, dua review analisis independen (lihat [Analisis Eksternal & Perbaikan Lanjutan](#analisis-eksternal--perbaikan-lanjutan)) menghasilkan perbaikan lanjutan: klasifikasi error granular, circuit breaker per produk, sticky-proxy-per-sesi (bug nyata yang diperbaiki), in-browser fetch untuk eliminasi TLS mismatch, dan load test dengan ramp-up bertahap. Arsitektur sudah mengimplementasikan praktik standar untuk high-quality scraping; uji volume 200+ item yang konsisten kemungkinan besar butuh item/produk yang belum pernah "dibakar" testing berulang dan/atau proxy residential premium.
 
 ## Daftar Isi
 
@@ -14,6 +14,7 @@ REST API (TypeScript) yang mengambil data detail produk dari Shopee Taiwan (`get
 - [Load Test / Uji Stabilitas](#load-test--uji-stabilitas)
 - [Hosting via Ngrok](#hosting-via-ngrok)
 - [Metode & Eksperimen yang Dicoba](#metode--eksperimen-yang-dicoba)
+- [Analisis Eksternal & Perbaikan Lanjutan](#analisis-eksternal--perbaikan-lanjutan)
 - [Batasan yang Diketahui](#batasan-yang-diketahui)
 
 ## Arsitektur
@@ -53,12 +54,14 @@ src/
     proxy.manager.ts       Proxy rotation (pluggable, no-op by default)
   lib/
     rateLimiter.ts         Concurrency limiter + jitter delay
-    retry.ts               Retry dgn backoff, beda perlakuan network error vs anti-bot
+    retry.ts               Retry per-tipe error, kebijakan berbeda per ScrapeErrorType
+    errors.ts              ScrapeError + 9 tipe error terklasifikasi
     logger.ts              Structured logging (pino)
   middleware/
     validateQuery.ts
     errorHandler.ts
   types/shopee.ts          Tipe ShopeeSession, ShopeeProductParams
+  techniques/              12 teknik anti-deteksi sebagai modul standalone (lihat index.ts)
 scripts/
   setup-browser.js         Download & stage Chrome for Testing untuk rebrowser-playwright
 test/
@@ -136,15 +139,61 @@ Health check sederhana, mengembalikan `{ "status": "ok" }`.
 
 ## Teknik Anti-Deteksi
 
+Sebagian besar teknik yang bisa dipilih (bukan arsitektur inti) diimplementasikan sebagai modul standalone di `src/techniques/` (`browserEngine.ts`, `languageInterstitial.ts`, `navigationWarmup.ts`, `resourceBlocking.ts`, `trafficWallDetector.ts`, `circuitBreaker.ts`, `fallbackEndpoint.ts`) — lihat `src/techniques/index.ts` untuk daftar lengkap & env var mana yang mengaktifkan tiap teknik. Ini memudahkan kombinasi/isolasi teknik untuk eksperimen lanjutan tanpa perlu mengubah logika inti `session.manager.ts`.
+
 1. **Sesi & header dari browser asli, bukan ditiru manual.** `session.manager.ts` membuka halaman produk lewat Playwright (dengan `puppeteer-extra-plugin-stealth`, yang menutupi indikator umum automation seperti `navigator.webdriver`, inkonsistensi plugin/permissions, dsb) dan menyadap (`page.on("request")`) header **yang benar-benar dikirim browser** ke endpoint `get_pc`/`get_rw`, termasuk signature dinamis Shopee (mis. `af-ac-enc-dat`, `x-api-source`) yang sulit dipalsukan manual. Ini menghindari kebutuhan reverse-engineer algoritma signature Shopee secara statis, yang rawan basi ketika Shopee mengubah implementasinya.
-2. **`rebrowser-playwright` alih-alih Playwright standar.** Playwright biasa (bahkan dengan stealth plugin) tetap meninggalkan jejak yang bisa dideteksi lewat cara ia memakai Chrome DevTools Protocol (mis. leak dari `Runtime.enable`) — vektor deteksi yang sudah dikenal luas dan tidak ditutupi stealth plugin generik. `rebrowser-playwright` adalah fork Playwright yang di-patch khusus untuk menghilangkan jejak CDP tersebut.
+2. **`rebrowser-playwright` alih-alih Playwright standar (`BROWSER_ENGINE`, lihat `src/techniques/browserEngine.ts`).** Playwright biasa (bahkan dengan stealth plugin) tetap meninggalkan jejak yang bisa dideteksi lewat cara ia memakai Chrome DevTools Protocol (mis. leak dari `Runtime.enable`) — vektor deteksi yang sudah dikenal luas dan tidak ditutupi stealth plugin generik. `rebrowser-playwright` adalah fork Playwright yang di-patch khusus untuk menghilangkan jejak CDP tersebut. Bisa dipilih 3 kombinasi: `rebrowser` (default), `vanilla-stealth` (Playwright biasa + stealth, untuk isolasi variabel patch CDP), atau `vanilla` (baseline awal yang gagal).
 3. **Penanganan interstitial pemilihan bahasa.** Navigasi pertama ke `shopee.tw` bisa menampilkan popup pilih bahasa/wilayah untuk visitor baru, yang kalau tidak ditangani akan memblokir halaman produk asli (dan `get_pc`) untuk pernah dimuat. Kode menyuntik cookie preferensi bahasa lebih dulu, dan sebagai fallback mencoba klik opsi Bahasa Mandarin Tradisional/Taiwan bila popup tetap muncul.
 4. **Reuse sesi per-produk, bukan browser-per-request.** Sesi (cookie + header) di-cache **per `storeId`+`dealId`** dengan TTL (`SESSION_REFRESH_INTERVAL_MS`, default 10 menit) dan dipakai ulang untuk request berikutnya ke produk yang sama lewat HTTP client ringan (axios). Pengujian menunjukkan sesi Shopee terikat erat ke halaman produk yang dinavigasi (kemungkinan lewat referer/token yang tervalidasi silang), sehingga sesi **tidak** di-share lintas produk berbeda — tiap produk baru tetap butuh satu navigasi Playwright untuk bootstrap sesi, tapi request berulang ke produk yang sama dalam TTL tetap ringan lewat axios.
 5. **Rate limiting alami.** `rateLimiter.ts` membatasi concurrency (default 4 request paralel) dan menambahkan jeda acak (jitter, default 300–1500ms) antar request, agar pola waktu request tidak terlihat mekanis seperti bot flood.
-6. **Retry yang membedakan jenis kegagalan.** `retry.ts` memisahkan penanganan network error/timeout (retry langsung dengan backoff eksponensial) dari sinyal anti-bot (403/429 → dianggap `AntiBotError`, memicu refresh sesi via browser dulu sebelum retry, karena retry dengan sesi basi hanya akan gagal lagi).
+6. **Retry berbasis klasifikasi error (`src/lib/errors.ts`).** Setiap kegagalan dinormalisasi jadi salah satu dari 9 tipe (`NETWORK_ERROR`, `TIMEOUT`, `HTTP_403`, `HTTP_429`, `TRAFFIC_VERIFICATION`, `INVALID_RESPONSE`, `SESSION_EXPIRED`, `PROXY_FAILURE`, `BROWSER_FAILURE`), masing-masing dengan kebijakan retry sendiri di `retry.ts`. **Penting:** `TRAFFIC_VERIFICATION` sengaja diberi **0 retry** — refresh sesi lalu mencoba lagi setelah kena wall anti-bot diduga justru **memperparah** risk/velocity score (bukan menyelesaikannya), sesuai temuan analisis eksternal di `.docs/`. Sebaliknya, sesi & produk tersebut langsung ditandai `blocked` dengan cooldown (`BLOCKED_COOLDOWN_MS`, default 5 menit) sebelum boleh dicoba lagi.
 7. **Proxy rotation (opsional, pluggable).** `proxy.manager.ts` mendukung daftar proxy yang dirotasi round-robin, dengan proxy yang sering gagal otomatis dikarantina sementara — mengurangi ketergantungan pada satu IP keluar.
 8. **Fallback endpoint.** Jika `get_pc` tidak mengembalikan item (null/error), otomatis dicoba `get_rw` sebagai cadangan.
 9. **Resource blocking di Playwright (opsional, `BLOCK_STATIC_ASSETS=true`).** Karena hanya butuh JSON `get_pc`/`get_rw`, gambar/font/stylesheet bisa diblokir saat bootstrap untuk memangkas bandwidth ~60-80% (berguna untuk biaya proxy per-GB). **Default: mati** — elemen `<img>`/font yang tidak pernah selesai load bisa jadi sinyal deteksi tersendiri bagi JS anti-bot Shopee (browser manusia asli selalu menyelesaikan load-nya), jadi hanya aktifkan setelah kualitas IP/proxy sudah terbukti cukup baik dengan sendirinya.
+10. **Sticky proxy konsisten per-sesi (bug fix).** Sebelumnya, browser (Playwright) dan HTTP client (axios) masing-masing memanggil `proxyManager.getProxy()` secara independen — dengan >1 proxy di `PROXY_LIST`, keduanya bisa saja keluar lewat **IP berbeda** dalam satu sesi yang sama, padahal cookie/token Shopee terikat ke IP. Sekarang proxy dipilih **sekali per bootstrap** dan disimpan di `session.proxyUrl`, lalu dipakai ulang secara konsisten oleh axios (atau in-browser fetch) untuk sesi itu.
+11. **In-browser fetch (opsional, `IN_BROWSER_FETCH=true`).** Alih-alih replay lewat axios (TLS/HTTP2 stack Node.js — berpotensi mismatch dengan fingerprint Chromium yang menerbitkan sesi), `get_pc`/`get_rw` dipanggil langsung lewat `page.evaluate(fetch(...))` di dalam konteks Chromium asli. Ini meniadakan variabel fingerprint TLS/HTTP2 sepenuhnya untuk request berulang, bukan cuma untuk request pertama.
+12. **Circuit breaker per-produk.** Begitu satu produk kena `/verify/traffic/error`, sesi & produk itu langsung ditandai `blocked` dan di-cooldown (`BLOCKED_COOLDOWN_MS`) — request berikutnya ke produk yang sama akan gagal cepat tanpa membuka browser baru, alih-alih terus menghantam produk yang sudah ter-flag.
+
+### Cara Memilih/Mengombinasikan Teknik
+
+Teknik #2, #7, #9, #11, dan bonus persistent-profile **opsional** dan dipilih lewat env var — kombinasikan sesuai kebutuhan eksperimen. Teknik lainnya (#1, #3-6, #8, #10, #12) selalu aktif (bagian arsitektur inti).
+
+| Env Var | Nilai | Teknik | Default |
+|---|---|---|---|
+| `BROWSER_ENGINE` | `rebrowser` \| `vanilla-stealth` \| `vanilla` | #2 — engine browser + stealth | `rebrowser` |
+| `NAVIGATION_STRATEGY` | `direct` \| `warmup` | #7 — navigasi warm-up homepage dulu | `direct` |
+| `BLOCK_STATIC_ASSETS` | `true` \| `false` | #9 — resource blocking | `false` |
+| `IN_BROWSER_FETCH` | `true` \| `false` | #11 — fetch lewat `page.evaluate()` | `false` |
+| `PERSISTENT_PROFILE` | `true` \| `false` | bonus — profil browser persisten | `false` |
+| `BLOCKED_COOLDOWN_MS` | angka (ms) | #12 — durasi cooldown circuit breaker | `300000` (5 menit) |
+| `SESSION_REFRESH_INTERVAL_MS` | angka (ms) | #4 — TTL cache sesi per-produk | `600000` (10 menit) |
+
+**Contoh penggunaan** (langsung sebagai prefix env var sebelum command, atau isi di `.env`):
+
+```bash
+# Default: rebrowser + axios, tanpa warm-up (paling ringan, paling cepat)
+npm run dev
+
+# Isolasi variabel: uji apakah patch CDP rebrowser yang berpengaruh, tanpa stealth plugin bawaan lain
+BROWSER_ENGINE=vanilla-stealth npm run dev
+
+# Uji hipotesis TLS/HTTP2 mismatch: eliminasi mismatch dengan fetch di dalam browser
+IN_BROWSER_FETCH=true npm run dev
+
+# Kombinasi "paling defensif": warm-up navigasi + in-browser fetch + profil persisten
+NAVIGATION_STRATEGY=warmup IN_BROWSER_FETCH=true PERSISTENT_PROFILE=true npm run dev
+
+# Uji baseline lama (method #1 di tabel eksperimen) untuk komparasi — biasanya gagal cepat
+BROWSER_ENGINE=vanilla npm run dev
+
+# Hemat bandwidth proxy (aktifkan resource blocking) sekaligus in-browser fetch
+BLOCK_STATIC_ASSETS=true IN_BROWSER_FETCH=true npm run dev
+
+# Perpendek cooldown circuit breaker jadi 1 menit untuk testing cepat (jangan dipakai di produksi)
+BLOCKED_COOLDOWN_MS=60000 npm run dev
+```
+
+Semua kombinasi bisa juga ditulis permanen di `.env` (lihat `.env.example` untuk daftar lengkap + penjelasan tiap opsi). Untuk peta teknik → file kode → env var secara terprogram, lihat komentar di `src/techniques/index.ts`.
 
 ## Load Test / Uji Stabilitas
 
@@ -158,6 +207,12 @@ npm run loadtest
 
 # Uji berbasis durasi (mis. 60 menit) alih-alih jumlah tetap
 DURATION_MINUTES=60 npm run loadtest
+
+# Ramp-up bertahap (RECOMMENDED): 1 → 5 → 10 → 25 → 50 → 100 → 200 request,
+# berhenti otomatis kalau satu stage error rate-nya >50% (hindari terus menambah
+# beban ke target yang sudah jelas bermasalah)
+RAMP_UP=true npm run loadtest
+RAMP_UP=true RAMP_STAGES=1,5,10,25,50,100,200 RAMP_PAUSE_MS=5000 npm run loadtest
 
 # Sesuaikan concurrency / total request
 TOTAL_REQUESTS=250 CONCURRENCY=5 npm run loadtest
@@ -200,18 +255,43 @@ Selama pengembangan, endpoint contoh (`storeId=178926468&dealId=21448123549` dan
 | 8 | Chrome asli terinstal (bukan Chrome-for-Testing bawaan) | `CHROME_EXECUTABLE_PATH=/Applications/Google Chrome.app/...` | ❌ Gagal — bukan soal anti-bot, tapi crash internal (`session closed`) | Patch CDP `rebrowser-playwright` tidak kompatibel dengan versi protokol Chrome stable; hanya cocok dengan revisi Chrome-for-Testing yang dibundel |
 | 9 | Persistent browser profile (cookies bertahan antar bootstrap) | `PERSISTENT_PROFILE=true` | ❌ Gagal karena bug library — bukan soal anti-bot | `playwright-extra`'s `launchPersistentContext` mengabaikan opsi `executablePath` custom, jatuh ke path default lama yang tidak ada di sistem. Kode fitur ini tetap ada di `session.manager.ts` untuk referensi, tapi tidak bisa dites tuntas karena bug ini |
 
-**Kesimpulan sementara:** kombinasi bukti (curl polos tanpa fingerprint dapat kode sama; IP Taiwan asli tetap gagal; homepage SPA memuat modul `pcmall-anticrawler` eksplisit) mengindikasikan Shopee TW punya sistem anti-scraping matang yang menilai risiko berdasarkan kombinasi banyak sinyal (velocity, device, network reputation) — bukan celah tunggal yang bisa ditembus satu teknik saja. Arsitektur di repo ini (hybrid Playwright+axios, session per-item, retry dengan refresh, proxy pluggable, deteksi wall eksplisit) sudah mengimplementasikan praktik-praktik standar untuk high-quality scraping; keberhasilan konsisten pada volume tinggi kemungkinan besar butuh proxy residential premium dengan reputasi IP yang benar-benar bersih per-request (bukan shared pool), yang berada di luar anggaran budget testing sesi ini.
+**Kesimpulan sementara (sudah dikoreksi, lihat catatan di bawah):** kombinasi bukti (curl polos tanpa fingerprint dapat kode sama; IP Taiwan asli tetap gagal; homepage SPA memuat modul `pcmall-anticrawler` eksplisit) mengindikasikan Shopee TW punya sistem anti-scraping matang yang menilai risiko berdasarkan kombinasi banyak sinyal — tapi **penting dicatat**: sebagian besar eksperimen di atas mengubah **lebih dari satu variabel sekaligus** (mis. metode #6 mengganti proxy sekaligus jaringan bersamaan), sehingga kesimpulan seperti "IP tidak berpengaruh" belum benar-benar teruji secara ketat dengan isolasi variabel tunggal. Lihat bagian berikutnya untuk analisis lanjutan yang mengoreksi hal ini.
+
+## Analisis Eksternal & Perbaikan Lanjutan
+
+Dua analisis independen direview terhadap temuan di atas, masing-masing mengambil sudut pandang berbeda dan saling melengkapi:
+
+**Analisis 1 — hipotesis spesifik (TLS/HTTP2 fingerprint mismatch):** begitu Playwright (fingerprint TLS Chromium) menerbitkan cookie/sesi, request axios berikutnya (fingerprint TLS Node.js/OpenSSL) bisa dianggap "session hijacking" oleh Shopee karena fingerprint transport-nya berubah di tengah sesi. **Catatan validitas:** hipotesis ini tidak sepenuhnya cocok dengan data kita — di beberapa log, kode `90309999` muncul **langsung dari capture response browser native saat bootstrap**, bukan cuma dari replay axios — jadi TLS mismatch kemungkinan salah satu kontributor, bukan satu-satunya penyebab.
+
+**Analisis 2 — kritik metodologis:** menyoroti bahwa banyak eksperimen kita mengubah >1 variabel sekaligus (melemahkan kekuatan kesimpulan), dan yang lebih penting — **pola retry kita sendiri (`refresh session → retry → refresh lagi → retry lagi`) diduga memperparah risk/velocity score**, bukan menyelesaikannya. Juga menyoroti load test awal (`20 request, concurrency 4`, langsung tanpa ramp-up bertahap) sebagai kemungkinan pemicu langsung item contoh ter-flag.
+
+### Perbaikan yang diimplementasikan dari kedua analisis ini
+
+| Sumber | Rekomendasi | Implementasi |
+|---|---|---|
+| Analisis 1 | In-browser fetch via `page.evaluate()` | `IN_BROWSER_FETCH=true` — lihat poin #11 di Teknik Anti-Deteksi |
+| Analisis 2 | Klasifikasi error granular, bukan satu error generik | `src/lib/errors.ts` — 9 tipe error dengan kebijakan retry masing-masing |
+| Analisis 2 | `TRAFFIC_VERIFICATION` jangan di-retry agresif | `retry.ts` — `maxRetries: 0` untuk tipe ini, langsung fail + cooldown |
+| Analisis 2 | Circuit breaker per produk/sesi | `session.manager.ts` — status `blocked` + `BLOCKED_COOLDOWN_MS` |
+| Analisis 2 | Sticky proxy harus konsisten sepanjang sesi (bukan per-request) | Bug nyata ditemukan & diperbaiki — lihat poin #10 di Teknik Anti-Deteksi |
+| Analisis 2 | Load test naik bertahap (1→5→10→...→200), bukan langsung volume tinggi | `test/loadtest.ts` — mode `RAMP_UP=true` |
+| Analisis 2 | Observability: `requestId`, `sessionAgeMs`, `latencyMs`, `responseHasItem`, dll | Ditambahkan ke log `shopee.client.ts` |
+
+### Rekomendasi yang belum/tidak diimplementasikan (dan alasannya)
+
+- **`tls-client` (TLS impersonation via native binary Go)**. Tidak diimplementasikan karena `IN_BROWSER_FETCH` mencapai tujuan yang sama (eliminasi mismatch TLS) tanpa dependency native tambahan yang menambah kompleksitas deployment secara signifikan.
+- **Eksperimen isolasi variabel tunggal penuh** (matriks hipotesis: replay request, lifetime signature, binding per-produk, device vs IP, perbandingan endpoint) — daftar eksperimen ini sangat berharga tapi masing-masing butuh produk yang benar-benar baru + akses live ke Shopee untuk dijalankan dengan benar (sesuatu yang sudah sangat terbatas di sesi ini karena volume testing sebelumnya). Kerangka kerja retry/error/circuit-breaker baru di atas sudah dirancang supaya eksperimen-eksperimen ini **bisa** dijalankan dengan lebih aman (tidak memperparah risk score) kapan pun akses ke produk baru tersedia.
 
 ## Batasan yang Diketahui
 
-- Signature/header yang ditangkap dari satu navigasi produk (`bootstrap`) mungkin bersifat spesifik untuk produk tersebut. Jika Shopee mengikat signature ke `item_id`/`shop_id` tertentu, request untuk produk lain di luar sesi bootstrap bisa memicu `AntiBotError` — namun ini otomatis ditangani: `retry.ts` akan memicu `session.manager.refresh()` **dengan storeId/dealId yang sedang diminta**, sehingga sistem secara efektif melakukan bootstrap browser baru khusus untuk produk tersebut sebelum retry, lalu meng-cache-nya untuk request berikutnya ke produk yang sama.
+- Signature/header yang ditangkap dari satu navigasi produk (`bootstrap`) mungkin bersifat spesifik untuk produk tersebut. Jika Shopee mengikat signature ke `item_id`/`shop_id` tertentu, request untuk produk lain di luar sesi bootstrap bisa memicu error terklasifikasi (`INVALID_RESPONSE`, lihat `src/lib/errors.ts`) — namun ini otomatis ditangani: `retry.ts` akan memicu `session.manager.refresh()` **dengan storeId/dealId yang sedang diminta**, sehingga sistem secara efektif melakukan bootstrap browser baru khusus untuk produk tersebut sebelum retry, lalu meng-cache-nya untuk request berikutnya ke produk yang sama.
 - Proxy tidak disediakan oleh pihak penguji (sesuai ketentuan tugas) — pengguna API ini bertanggung jawab menyediakan proxy sendiri via `PROXY_LIST` bila diperlukan.
 
 ### Catatan: Shopee traffic verification wall (`/verify/traffic/error`)
 
 Selama pengembangan, ditemukan bahwa Shopee TW punya lapisan anti-bot yang me-redirect traffic yang dicurigai ke halaman `shopee.tw/verify/traffic/error?...&is_logged_in=false` — tampilannya menyerupai "silakan login" biasa, tapi path URL-nya mengonfirmasi ini fallback sistem risk-control, bukan requirement login yang genuine.
 
-Temuan penting dari eksperimen: wall ini muncul **konsisten pada device yang sama meski IP/jaringan sudah diganti total** (SIM card berbeda, dengan/tanpa VPN), tapi request pertama yang dilakukan sebelum volume testing tinggi berhasil mengembalikan data asli lengkap — mengindikasikan ini kombinasi **rate/velocity-based risk scoring per device+network** yang terakumulasi dari volume testing berulang dalam waktu singkat, bukan kegagalan struktural pada scraper. `session.manager.ts` sekarang mendeteksi redirect ke `/verify/traffic` secara eksplisit dan langsung memicu `AntiBotError` (refresh sesi + retry) alih-alih menunggu timeout penuh.
+Temuan penting dari eksperimen: wall ini muncul **konsisten pada device yang sama meski IP/jaringan sudah diganti total** (SIM card berbeda, dengan/tanpa VPN), tapi request pertama yang dilakukan sebelum volume testing tinggi berhasil mengembalikan data asli lengkap — mengindikasikan ini kombinasi **rate/velocity-based risk scoring per device+network** yang terakumulasi dari volume testing berulang dalam waktu singkat, bukan kegagalan struktural pada scraper. `session.manager.ts` sekarang mendeteksi redirect ke `/verify/traffic` secara eksplisit dan langsung memicu error `TRAFFIC_VERIFICATION` (gagal cepat + cooldown, **tanpa** retry otomatis — lihat bagian Analisis Eksternal & Perbaikan Lanjutan) alih-alih menunggu timeout penuh.
 
 Implikasi praktis: untuk volume testing sungguhan (200+ item, durasi lama), **proxy rotation sungguh-sungguh diperlukan** (bukan opsional) agar tidak ada satu IP yang mengakumulasi cukup banyak request untuk memicu wall ini — sesuai desain `proxy.manager.ts` yang sudah pluggable untuk kebutuhan ini.
 
