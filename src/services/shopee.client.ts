@@ -11,10 +11,15 @@ import type { ShopeeApiEndpoint, ShopeeProductParams, ShopeeSession } from "../t
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-// Experimental (IN_BROWSER_FETCH=true): route repeat get_pc/get_rw calls through a real
-// Chromium page.evaluate(fetch(...)) instead of axios, eliminating any TLS/HTTP2 fingerprint
-// mismatch between the browser that established the session and the client replaying it.
-const IN_BROWSER_FETCH = process.env.IN_BROWSER_FETCH === "true";
+// Default true: route get_pc/get_rw calls through a real Chromium page.evaluate(fetch(...))
+// instead of axios. Public research on Shopee's anti-fraud headers indicates the per-request
+// signature (x-sap-ri) is bound to a device-local sequence counter, not just time/session —
+// an out-of-band axios replay of captured headers is structurally rejected once that counter
+// desyncs, even with a byte-for-byte correct signature. Only a fetch executed by the same
+// browser instance that owns the session advances that counter correctly. Set
+// IN_BROWSER_FETCH=false to fall back to axios (faster, but expect it to degrade after the
+// first request in a session).
+const IN_BROWSER_FETCH = process.env.IN_BROWSER_FETCH !== "false";
 
 function buildUrl(endpoint: ShopeeApiEndpoint, params: ShopeeProductParams): string {
   const qs = new URLSearchParams({

@@ -151,7 +151,7 @@ Sebagian besar teknik yang bisa dipilih (bukan arsitektur inti) diimplementasika
 8. **Fallback endpoint.** Jika `get_pc` tidak mengembalikan item (null/error), otomatis dicoba `get_rw` sebagai cadangan.
 9. **Resource blocking di Playwright (opsional, `BLOCK_STATIC_ASSETS=true`).** Karena hanya butuh JSON `get_pc`/`get_rw`, gambar/font/stylesheet bisa diblokir saat bootstrap untuk memangkas bandwidth ~60-80% (berguna untuk biaya proxy per-GB). **Default: mati** — elemen `<img>`/font yang tidak pernah selesai load bisa jadi sinyal deteksi tersendiri bagi JS anti-bot Shopee (browser manusia asli selalu menyelesaikan load-nya), jadi hanya aktifkan setelah kualitas IP/proxy sudah terbukti cukup baik dengan sendirinya.
 10. **Sticky proxy konsisten per-sesi (bug fix).** Sebelumnya, browser (Playwright) dan HTTP client (axios) masing-masing memanggil `proxyManager.getProxy()` secara independen — dengan >1 proxy di `PROXY_LIST`, keduanya bisa saja keluar lewat **IP berbeda** dalam satu sesi yang sama, padahal cookie/token Shopee terikat ke IP. Sekarang proxy dipilih **sekali per bootstrap** dan disimpan di `session.proxyUrl`, lalu dipakai ulang secara konsisten oleh axios (atau in-browser fetch) untuk sesi itu.
-11. **In-browser fetch (opsional, `IN_BROWSER_FETCH=true`).** Alih-alih replay lewat axios (TLS/HTTP2 stack Node.js — berpotensi mismatch dengan fingerprint Chromium yang menerbitkan sesi), `get_pc`/`get_rw` dipanggil langsung lewat `page.evaluate(fetch(...))` di dalam konteks Chromium asli. Ini meniadakan variabel fingerprint TLS/HTTP2 sepenuhnya untuk request berulang, bukan cuma untuk request pertama.
+11. **In-browser fetch (default aktif, `IN_BROWSER_FETCH=true`).** Alih-alih replay lewat axios (TLS/HTTP2 stack Node.js — berpotensi mismatch dengan fingerprint Chromium yang menerbitkan sesi), `get_pc`/`get_rw` dipanggil langsung lewat `page.evaluate(fetch(...))` di dalam konteks Chromium asli. Ini meniadakan variabel fingerprint TLS/HTTP2 sepenuhnya untuk request berulang, bukan cuma untuk request pertama. **Alasan diubah jadi default (bukan lagi opsional):** dokumentasi teknis publik tentang mekanisme anti-fraud Shopee (header signature `x-sap-ri` dkk.) menyebutkan signature per-request terikat ke *sequence counter* di sisi device yang hanya bertambah benar ketika fetch dieksekusi oleh instance browser yang sama yang memegang sesi tersebut — replay `axios` di luar browser, walau headernya hasil capture asli, berisiko dianggap "out-of-sequence" begitu counter itu tidak sinkron. Ini cocok dengan pola yang teramati sepanjang project ini: request pertama (dari browser) sering berhasil, replay berikutnya (via axios) yang gagal. Set `IN_BROWSER_FETCH=false` untuk kembali ke axios (lebih cepat, tapi sesuai analisis di atas berisiko makin sering gagal setelah request pertama dalam satu sesi).
 12. **Circuit breaker per-produk.** Begitu satu produk kena `/verify/traffic/error`, sesi & produk itu langsung ditandai `blocked` dan di-cooldown (`BLOCKED_COOLDOWN_MS`) — request berikutnya ke produk yang sama akan gagal cepat tanpa membuka browser baru, alih-alih terus menghantam produk yang sudah ter-flag.
 
 ### Cara Memilih/Mengombinasikan Teknik
@@ -163,7 +163,7 @@ Teknik #2, #7, #9, #11, dan bonus persistent-profile **opsional** dan dipilih le
 | `BROWSER_ENGINE` | `rebrowser` \| `vanilla-stealth` \| `vanilla` | #2 — engine browser + stealth | `rebrowser` |
 | `NAVIGATION_STRATEGY` | `direct` \| `warmup` | #7 — navigasi warm-up homepage dulu | `direct` |
 | `BLOCK_STATIC_ASSETS` | `true` \| `false` | #9 — resource blocking | `false` |
-| `IN_BROWSER_FETCH` | `true` \| `false` | #11 — fetch lewat `page.evaluate()` | `false` |
+| `IN_BROWSER_FETCH` | `true` \| `false` | #11 — fetch lewat `page.evaluate()` | `true` |
 | `PERSISTENT_PROFILE` | `true` \| `false` | bonus — profil browser persisten | `false` |
 | `BLOCKED_COOLDOWN_MS` | angka (ms) | #12 — durasi cooldown circuit breaker | `300000` (5 menit) |
 | `SESSION_REFRESH_INTERVAL_MS` | angka (ms) | #4 — TTL cache sesi per-produk | `600000` (10 menit) |
@@ -171,23 +171,23 @@ Teknik #2, #7, #9, #11, dan bonus persistent-profile **opsional** dan dipilih le
 **Contoh penggunaan** (langsung sebagai prefix env var sebelum command, atau isi di `.env`):
 
 ```bash
-# Default: rebrowser + axios, tanpa warm-up (paling ringan, paling cepat)
+# Default: rebrowser + in-browser fetch, tanpa warm-up (rekomendasi produksi)
 npm run dev
 
 # Isolasi variabel: uji apakah patch CDP rebrowser yang berpengaruh, tanpa stealth plugin bawaan lain
 BROWSER_ENGINE=vanilla-stealth npm run dev
 
-# Uji hipotesis TLS/HTTP2 mismatch: eliminasi mismatch dengan fetch di dalam browser
-IN_BROWSER_FETCH=true npm run dev
+# Nonaktifkan in-browser fetch, kembali ke axios (lebih cepat, tapi lebih rawan gagal setelah request pertama per sesi)
+IN_BROWSER_FETCH=false npm run dev
 
-# Kombinasi "paling defensif": warm-up navigasi + in-browser fetch + profil persisten
-NAVIGATION_STRATEGY=warmup IN_BROWSER_FETCH=true PERSISTENT_PROFILE=true npm run dev
+# Kombinasi "paling defensif": warm-up navigasi + in-browser fetch (default) + profil persisten
+NAVIGATION_STRATEGY=warmup PERSISTENT_PROFILE=true npm run dev
 
 # Uji baseline lama (method #1 di tabel eksperimen) untuk komparasi — biasanya gagal cepat
 BROWSER_ENGINE=vanilla npm run dev
 
-# Hemat bandwidth proxy (aktifkan resource blocking) sekaligus in-browser fetch
-BLOCK_STATIC_ASSETS=true IN_BROWSER_FETCH=true npm run dev
+# Hemat bandwidth proxy (resource blocking) di atas default in-browser fetch
+BLOCK_STATIC_ASSETS=true npm run dev
 
 # Perpendek cooldown circuit breaker jadi 1 menit untuk testing cepat (jangan dipakai di produksi)
 BLOCKED_COOLDOWN_MS=60000 npm run dev
@@ -269,7 +269,7 @@ Dua analisis independen direview terhadap temuan di atas, masing-masing mengambi
 
 | Sumber | Rekomendasi | Implementasi |
 |---|---|---|
-| Analisis 1 | In-browser fetch via `page.evaluate()` | `IN_BROWSER_FETCH=true` — lihat poin #11 di Teknik Anti-Deteksi |
+| Analisis 1 | In-browser fetch via `page.evaluate()` | `IN_BROWSER_FETCH=true` (kini default) — lihat poin #11 di Teknik Anti-Deteksi |
 | Analisis 2 | Klasifikasi error granular, bukan satu error generik | `src/lib/errors.ts` — 9 tipe error dengan kebijakan retry masing-masing |
 | Analisis 2 | `TRAFFIC_VERIFICATION` jangan di-retry agresif | `retry.ts` — `maxRetries: 0` untuk tipe ini, langsung fail + cooldown |
 | Analisis 2 | Circuit breaker per produk/sesi | `session.manager.ts` — status `blocked` + `BLOCKED_COOLDOWN_MS` |
@@ -281,6 +281,14 @@ Dua analisis independen direview terhadap temuan di atas, masing-masing mengambi
 
 - **`tls-client` (TLS impersonation via native binary Go)**. Tidak diimplementasikan karena `IN_BROWSER_FETCH` mencapai tujuan yang sama (eliminasi mismatch TLS) tanpa dependency native tambahan yang menambah kompleksitas deployment secara signifikan.
 - **Eksperimen isolasi variabel tunggal penuh** (matriks hipotesis: replay request, lifetime signature, binding per-produk, device vs IP, perbandingan endpoint) — daftar eksperimen ini sangat berharga tapi masing-masing butuh produk yang benar-benar baru + akses live ke Shopee untuk dijalankan dengan benar (sesuatu yang sudah sangat terbatas di sesi ini karena volume testing sebelumnya). Kerangka kerja retry/error/circuit-breaker baru di atas sudah dirancang supaya eksperimen-eksperimen ini **bisa** dijalankan dengan lebih aman (tidak memperparah risk score) kapan pun akses ke produk baru tersedia.
+
+### Catatan tambahan: riset publik tentang mekanisme signature Shopee
+
+Untuk memvalidasi arah `IN_BROWSER_FETCH`, ditelusuri juga dokumentasi teknis publik yang membahas struktur header anti-fraud Shopee (`af-ac-enc-sz-token` sebagai konstanta level-sesi, `x-sap-ri` sebagai signature per-request). Temuan yang relevan untuk desain kita:
+
+- Signature per-request dilaporkan terikat ke **sequence counter di sisi device**, bukan murni time-based — permintaan yang "out-of-sequence" ditolak meski signature-nya sendiri valid. Ini konsisten dengan pola berulang yang kita amati sendiri: navigasi pertama (dieksekusi langsung oleh browser) cenderung berhasil, sementara replay request berikutnya di luar browser (axios, walau memakai header hasil capture asli) yang mulai gagal.
+- Signature ini dihasilkan oleh logic yang di-obfuscate berat di sisi client (bukan formula statis yang bisa direplikasi dengan HMAC biasa) — mengonfirmasi bahwa pendekatan kita (menangkap sesi dari browser asli, bukan mencoba merekonstruksi algoritma signature secara statis) adalah arah yang tepat, bukan jalan pintas yang harusnya dihindari.
+- Implikasi langsung ke desain: karena replay di luar browser secara struktural rawan gagal begitu counter desync, `IN_BROWSER_FETCH` diubah dari opsional menjadi **default aktif** (lihat poin #11 di atas) — setiap panggilan `get_pc`/`get_rw` dieksekusi oleh instance browser yang sama yang memegang sesi, bukan direplay lewat client terpisah.
 
 ## Batasan yang Diketahui
 
@@ -295,6 +303,16 @@ Temuan penting dari eksperimen: wall ini muncul **konsisten pada device yang sam
 
 Implikasi praktis: untuk volume testing sungguhan (200+ item, durasi lama), **proxy rotation sungguh-sungguh diperlukan** (bukan opsional) agar tidak ada satu IP yang mengakumulasi cukup banyak request untuk memicu wall ini — sesuai desain `proxy.manager.ts` yang sudah pluggable untuk kebutuhan ini.
 
+**Update — pengujian dengan IP bersih + browser hardened penuh:** untuk menguji ulang hipotesis rate/velocity-based di atas dengan lebih ketat, dilakukan eksperimen tambahan: browsing manual (bukan lewat API) ke `shopee.tw` menggunakan kombinasi **IP residential Taiwan yang baru & terverifikasi bersih** (geo-targeted via suffix `__cr.tw` pada proxy, bukan IP yang sudah dipakai testing sebelumnya) **dan** browser hasil stack anti-deteksi proyek ini sendiri (`rebrowser-playwright` + stealth, lihat `scripts/browse.ts`) — bukan Chrome biasa tanpa mitigasi apa pun.
+
+Hasilnya: wall verifikasi/login tetap muncul, **bukan hanya untuk 2 item contoh yang sudah ter-flag, tapi untuk navigasi umum ke `shopee.tw` sekalipun** (sebelum sempat mengklik produk apa pun). Ini titik data penting yang mempersempit hipotesis:
+
+- Bukan murni soal reputasi IP/jaringan — IP residential Taiwan yang dipakai baru pertama kali dan tervalidasi geo-correct.
+- Bukan murni soal fingerprint browser — browser yang dipakai sudah melalui seluruh mitigasi CDP-leak dan stealth yang didokumentasikan di atas.
+- Blok terjadi pada level navigasi awal (homepage), bukan spesifik pada 2 item lama atau pada panggilan API `get_pc`/`get_rw`.
+
+Kesimpulan yang lebih kuat: kemungkinan besar Shopee TW saat ini menerapkan **risk-scoring gabungan di banyak layer sekaligus** (device/browser signal, jaringan, dan kemungkinan juga histori akun/sesi browser lokal) yang tidak sepenuhnya bisa diatasi hanya dari sisi client — walau begitu, desain sistem (circuit breaker, klasifikasi error `TRAFFIC_VERIFICATION`, retry policy konservatif, dan opsi teknik yang bisa dikombinasikan di `src/techniques/`) tetap relevan sebagai mitigasi produksi, karena wall ini pada dasarnya adalah salah satu mode kegagalan yang harus ditangani dengan graceful, bukan dihindari 100%.
+
 ### Catatan: DNS hijacking di jaringan tertentu (mis. ISP Indonesia)
 
 Saat pengembangan, ditemukan bahwa beberapa jaringan ISP (mis. Telkomsel/"internetbaik") melakukan **DNS hijacking** untuk domain `shopee.tw` — resolusi DNS dialihkan ke IP block-page milik ISP, bukan IP asli Shopee, sehingga baik akses langsung maupun lewat sebagian proxy (yang meresolusi hostname secara lokal, mis. SOCKS4 klasik) akan gagal total meski kode maupun proxy-nya sendiri berfungsi normal.
@@ -308,5 +326,7 @@ curl -s "https://cloudflare-dns.com/dns-query?name=shopee.tw&type=A" -H "accept:
 ```
 
 Jika kedua IP berbeda jauh (satu milik ISP lokal, satu milik infrastruktur Shopee/Cloudflare/Akamai), berarti jaringan Anda kena DNS hijack untuk domain ini.
+
+**Update — pemblokiran juga terjadi di level SNI, bukan cuma DNS.** Bahkan saat IP asli Shopee dipaksa secara eksplisit (`curl --resolve shopee.tw:443:<IP-asli>`, melewati DNS hijack), koneksi TLS tetap gagal dengan `Connection reset by peer` tepat setelah `ClientHello` (pada titik SNI `shopee.tw` terkirim plaintext) — pola khas pemblokiran DPI (deep packet inspection) berbasis SNI oleh jaringan, di luar kendali aplikasi/kode. Praktisnya: pada jaringan yang kena kombinasi DNS hijack + SNI block ini, **koneksi langsung (tanpa proxy) ke `shopee.tw` mustahil berhasil sama sekali** — bukan soal deteksi anti-bot Shopee, tapi jaringan lokal itu sendiri yang memutus koneksi sebelum sempat sampai ke Shopee. Ini menjelaskan mengapa proxy (yang membuat koneksi TLS keluar dengan SNI ke domain proxy, bukan `shopee.tw`, dari luar jaringan yang diblokir) tetap jadi mitigasi yang diperlukan di jaringan seperti ini — bukan cuma untuk menghindari IP-reputation Shopee, tapi juga untuk melewati blokir jaringan lokal itu sendiri.
 
 Workaround bila mengalami hal serupa: ganti DNS resolver sistem ke DNS pihak ketiga yang tidak dihijack (mis. `1.1.1.1`/`8.8.8.8` via DoH/DoT), atau gunakan proxy/VPN yang melakukan resolusi DNS **di sisi remote** (SOCKS5 dengan `--socks5-hostname`, bukan SOCKS4 klasik) sehingga resolusi tidak bergantung pada DNS lokal yang sudah dihijack.

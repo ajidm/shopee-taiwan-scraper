@@ -24,8 +24,12 @@ const HEADLESS = process.env.HEADLESS !== "false";
 // top-level "playwright" package. Override via env if the binary lives elsewhere.
 const MAC_ARCH = process.arch === "arm64" ? "mac-arm64" : "mac-x64";
 const REBROWSER_CACHE_DIR = `${process.env.HOME}/Library/Caches/rebrowser-chromium-manual`;
+// Note: "|| " (not "??") deliberately — an empty string in .env (CHROME_EXECUTABLE_PATH=
+// with nothing after it, which dotenv sets to "" rather than undefined) must also fall
+// through to the computed default, or Playwright silently ignores it and falls back to
+// its own default browser resolution (which fails since that browser was never installed).
 const CHROME_EXECUTABLE_PATH =
-  process.env.CHROME_EXECUTABLE_PATH ??
+  process.env.CHROME_EXECUTABLE_PATH ||
   (HEADLESS
     ? `${REBROWSER_CACHE_DIR}/chrome-headless-shell-${MAC_ARCH}/chrome-headless-shell`
     : `${REBROWSER_CACHE_DIR}/chrome-${MAC_ARCH}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`);
