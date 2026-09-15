@@ -11,6 +11,7 @@ REST API (TypeScript) yang mengambil data detail produk dari Shopee Taiwan (`get
 - [Konfigurasi Proxy](#konfigurasi-proxy)
 - [Penggunaan API](#penggunaan-api)
 - [Teknik Anti-Deteksi](#teknik-anti-deteksi)
+- [Mode Guest vs Login (`AUTH_MODE`)](#mode-guest-vs-login-auth_mode)
 - [Load Test / Uji Stabilitas](#load-test--uji-stabilitas)
 - [Hosting via Ngrok](#hosting-via-ngrok)
 - [Metode & Eksperimen yang Dicoba](#metode--eksperimen-yang-dicoba)
@@ -194,6 +195,36 @@ BLOCKED_COOLDOWN_MS=60000 npm run dev
 ```
 
 Semua kombinasi bisa juga ditulis permanen di `.env` (lihat `.env.example` untuk daftar lengkap + penjelasan tiap opsi). Untuk peta teknik → file kode → env var secara terprogram, lihat komentar di `src/techniques/index.ts`.
+
+## Mode Guest vs Login (`AUTH_MODE`)
+
+Sesuai temuan di bagian [Batasan yang Diketahui](#batasan-yang-diketahui), Shopee saat ini membatasi akses **guest/anonim** secara luas — bukan cuma untuk scraper otomatis, tapi juga terkonfirmasi lewat browsing manual manusia. Untuk mengakomodasi kedua skenario tanpa mengubah asumsi cakupan tugas (guest-only tetap default), tersedia dua mode lewat `AUTH_MODE`:
+
+| `AUTH_MODE` | Perilaku | Default |
+|---|---|---|
+| `guest` | Sesi bootstrap dari context browser kosong/anonim — sesuai cakupan awal tugas (scraping publik, tanpa akun). | ✅ Default |
+| `login` | Sesi bootstrap dengan memuat *storage state* (cookies + localStorage) dari login yang sudah dilakukan sebelumnya. | — |
+
+**Penting: login form tidak pernah diotomasi oleh kode ini.** Proses login (termasuk OTP/captcha apa pun yang diminta Shopee) selalu dilakukan manusia secara manual, satu kali, lewat browser asli yang dibuka `npm run login` — bukan diisi otomatis oleh skrip. Ini mengurangi risiko akun (tidak ada credential-stuffing/scripted-login yang bisa memicu deteksi tambahan) dan menghindari kebutuhan menyimpan password mentah di mana pun dalam kode/`.env`.
+
+**Cara pakai mode login:**
+
+```bash
+# 1. Login manual satu kali (membuka browser asli, biarkan Anda login termasuk OTP/captcha)
+npm run login
+# atau target region lain:
+SHOPEE_DOMAIN=shopee.co.id npm run login
+
+# Setelah login selesai di browser yang terbuka, tekan Enter di terminal.
+# Session (cookies + localStorage) tersimpan ke .auth/shopee-login-state.json (gitignored).
+
+# 2. Jalankan server dengan sesi yang sudah login
+AUTH_MODE=login npm run dev
+```
+
+Jika `AUTH_MODE=login` diset tapi file storage state belum ada (belum pernah `npm run login`), sistem otomatis fallback ke mode `guest` dengan warning log — tidak crash.
+
+**Catatan risiko & cakupan:** mode `login` disediakan untuk **keperluan validasi/riset** (mis. mengisolasi apakah akses guest vs akses ter-otentikasi memengaruhi hasil `get_pc`), bukan rekomendasi default untuk production run bervolume tinggi — akun pribadi yang dipakai untuk 200+ request otomatis dalam waktu singkat berisiko kena flag/pembatasan oleh Shopee, terlepas dari teknik anti-deteksi apa pun yang dipakai. File `.auth/shopee-login-state.json` berisi cookies sesi aktif — perlakukan seperti password, jangan pernah di-commit (sudah masuk `.gitignore`).
 
 ## Load Test / Uji Stabilitas
 

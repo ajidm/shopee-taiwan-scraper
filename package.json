@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "loadtest": "tsx test/loadtest.ts",
+    "login": "tsx scripts/login.ts",
     "lint": "eslint src test",
     "setup:browser": "node scripts/setup-browser.js"
   },

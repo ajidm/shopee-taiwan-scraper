@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { Browser, BrowserContext } from "rebrowser-playwright";
 import { logger } from "../lib/logger";
 import { ScrapeError } from "../lib/errors";
@@ -49,6 +50,24 @@ const BLOCKED_COOLDOWN_MS = Number(process.env.BLOCKED_COOLDOWN_MS ?? 5 * 60 * 1
 const PERSISTENT_PROFILE = process.env.PERSISTENT_PROFILE === "true";
 const PROFILE_DIR = `${process.env.HOME}/.mr-scraper-chrome-profile`;
 
+// AUTH_MODE=login: bootstrap sessions from a previously-authenticated storage state (cookies +
+// localStorage) instead of a blank guest context. The storage state file is produced by a
+// one-time manual login run via `npm run login` (see scripts/login.ts) — this project never
+// automates the login form itself (avoids scripting around OTP/captcha, and avoids handling
+// raw credentials in code). Falls back to guest mode with a warning if the file is missing.
+const AUTH_MODE = process.env.AUTH_MODE === "login" ? "login" : "guest";
+const LOGIN_STORAGE_STATE_PATH = process.env.LOGIN_STORAGE_STATE_PATH || `${process.cwd()}/.auth/shopee-login-state.json`;
+
+function getStorageStateOption(): string | undefined {
+  if (AUTH_MODE !== "login") return undefined;
+  if (fs.existsSync(LOGIN_STORAGE_STATE_PATH)) return LOGIN_STORAGE_STATE_PATH;
+  logger.warn(
+    { path: LOGIN_STORAGE_STATE_PATH },
+    "AUTH_MODE=login but no storage state file found — falling back to guest session. Run `npm run login` first."
+  );
+  return undefined;
+}
+
 // Headers actually used by Shopee's own web client when it calls get_pc/get_rw internally.
 // Captured once via the real browser navigation, then reused verbatim for lightweight HTTP calls.
 const PDP_REQUEST_URL_FRAGMENT = "/api/v4/pdp/get_";
@@ -92,6 +111,10 @@ class SessionManager {
     if (PERSISTENT_PROFILE) {
       if (!this.persistentContext) {
         const proxyUrl = proxyManager.getProxy();
+        // Note: launchPersistentContext has no storageState option (a persistent profile
+        // already carries its own cookies/localStorage across launches via PROFILE_DIR) —
+        // AUTH_MODE=login only applies to ephemeral contexts. To use a login session with a
+        // persistent profile, log in manually once inside that profile via PERSISTENT_PROFILE.
         this.persistentContext = (await chromium.launchPersistentContext(PROFILE_DIR, {
           headless: HEADLESS,
           executablePath: CHROME_EXECUTABLE_PATH,
@@ -100,7 +123,10 @@ class SessionManager {
           timezoneId: "Asia/Taipei",
           viewport: { width: 1366, height: 768 },
         })) as unknown as BrowserContext;
-        logger.info({ usingProxy: Boolean(proxyUrl), profileDir: PROFILE_DIR }, "Persistent browser profile launched");
+        logger.info(
+          { usingProxy: Boolean(proxyUrl), profileDir: PROFILE_DIR, authMode: AUTH_MODE },
+          "Persistent browser profile launched"
+        );
       }
       // Persistent mode inherently pins one proxy for the profile's whole lifetime — there's
       // no per-session proxy to report back here beyond whatever was picked at launch.
@@ -119,6 +145,7 @@ class SessionManager {
       timezoneId: "Asia/Taipei",
       viewport: { width: 1366, height: 768 },
       proxy: proxyUrl ? parseProxyForPlaywright(proxyUrl) : undefined,
+      storageState: getStorageStateOption(),
     });
   }
 
@@ -221,7 +248,7 @@ class SessionManager {
     const key = sessionKey(params);
     const previousRefreshCount = this.cache.get(key)?.refreshCount ?? 0;
     logger.info(
-      { params, persistentProfile: PERSISTENT_PROFILE, refreshCount: previousRefreshCount + 1 },
+      { params, persistentProfile: PERSISTENT_PROFILE, authMode: AUTH_MODE, refreshCount: previousRefreshCount + 1 },
       "Bootstrapping fresh Shopee session via headless browser"
     );
     let context: BrowserContext | null = null;
