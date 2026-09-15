@@ -50,6 +50,18 @@ const BROWSER_CHANNEL = process.env.BROWSER_CHANNEL || undefined;
 // Testing build) — never point it at CHROME_EXECUTABLE_PATH, let it resolve its own binary.
 const USE_ENGINE_DEFAULT_BINARY = process.env.BROWSER_ENGINE === "patchright";
 
+// Experimental (DEVICE_EMULATION=mobile): emulate a mobile web browser (iOS Safari UA,
+// touch viewport) instead of desktop. Hypothesis from external research: Shopee's WAF may
+// carry a higher trust bias toward mobile-web traffic than desktop — untested in this
+// project prior to this option existing. See README "Batasan yang Diketahui".
+const DEVICE_EMULATION = process.env.DEVICE_EMULATION === "mobile" ? "mobile" : "desktop";
+const MOBILE_USER_AGENT =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1";
+const DEVICE_CONTEXT_OPTIONS =
+  DEVICE_EMULATION === "mobile"
+    ? { viewport: { width: 390, height: 844 }, userAgent: MOBILE_USER_AGENT, isMobile: true, hasTouch: true }
+    : { viewport: { width: 1366, height: 768 } };
+
 // Which Shopee region to scrape. Defaults to shopee.tw (this task's actual target); can be
 // overridden for validation/testing against another region's platform (e.g. shopee.co.id),
 // which shares the same get_pc/get_rw API shape and anti-bot behavior — see README.md.
@@ -179,7 +191,7 @@ class SessionManager {
     return browser.newContext({
       locale: SHOPEE_LOCALE,
       timezoneId: SHOPEE_TIMEZONE,
-      viewport: { width: 1366, height: 768 },
+      ...DEVICE_CONTEXT_OPTIONS,
       proxy: proxyUrl ? parseProxyForPlaywright(proxyUrl) : undefined,
       storageState: getStorageStateOption(),
     });
