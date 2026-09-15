@@ -191,8 +191,14 @@ class SessionManager {
         .map((pair) => {
           const idx = pair.indexOf("=");
           return { name: pair.slice(0, idx), value: pair.slice(idx + 1), domain: `.${SHOPEE_DOMAIN}`, path: "/" };
-        });
-      await context.addCookies(cookies);
+        })
+        // A pair with no "=" (idx === -1) or an empty name (idx === 0) isn't a valid cookie
+        // field for CDP's Storage.setCookies — surfaced by AUTH_MODE=login sessions, whose
+        // cookie jar is large enough to occasionally include a malformed/empty entry.
+        .filter((c) => c.name.length > 0);
+      await context.addCookies(cookies).catch((err) => {
+        logger.warn({ message: (err as Error).message, cookieCount: cookies.length }, "addCookies failed during in-browser fetch, continuing without them");
+      });
 
       const page = await context.newPage();
       try {
