@@ -21,19 +21,23 @@ const REQUEST_TIMEOUT_MS = 15_000;
 // first request in a session).
 const IN_BROWSER_FETCH = process.env.IN_BROWSER_FETCH !== "false";
 
+// Kept in sync with SHOPEE_DOMAIN in session.manager.ts — see its comment for why this is
+// overridable (validation against another Shopee region sharing the same API shape).
+const SHOPEE_DOMAIN = process.env.SHOPEE_DOMAIN || "shopee.tw";
+
 function buildUrl(endpoint: ShopeeApiEndpoint, params: ShopeeProductParams): string {
   const qs = new URLSearchParams({
     item_id: params.dealId,
     shop_id: params.storeId,
   });
-  return `https://shopee.tw/api/v4/pdp/${endpoint}?${qs.toString()}`;
+  return `https://${SHOPEE_DOMAIN}/api/v4/pdp/${endpoint}?${qs.toString()}`;
 }
 
 function buildHeaders(session: ShopeeSession, params: ShopeeProductParams): Record<string, string> {
   const headers: Record<string, string> = {
     ...session.headers,
     cookie: session.cookieHeader,
-    referer: `https://shopee.tw/a-i.${params.storeId}.${params.dealId}`,
+    referer: `https://${SHOPEE_DOMAIN}/a-i.${params.storeId}.${params.dealId}`,
   };
   // Content-length from the captured request no longer applies to this GET call.
   delete headers["content-length"];

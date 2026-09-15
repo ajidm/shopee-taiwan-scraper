@@ -12,8 +12,8 @@ const NAV_TIMEOUT_MS = 30_000;
  * techniques and roughly doubles bootstrap time, which may still matter in combination
  * with other unproven mitigations.
  */
-export async function warmupHomepage(page: Page): Promise<void> {
-  await page.goto("https://shopee.tw/", { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+export async function warmupHomepage(page: Page, domain = "shopee.tw"): Promise<void> {
+  await page.goto(`https://${domain}/`, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
   await page.mouse.move(200 + Math.random() * 400, 200 + Math.random() * 300);
   await page.waitForTimeout(1500 + Math.random() * 2000);
 }

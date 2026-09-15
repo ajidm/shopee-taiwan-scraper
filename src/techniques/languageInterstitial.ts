@@ -6,18 +6,24 @@ import type { BrowserContext, Page } from "rebrowser-playwright";
  * ever loading if left unhandled. Two-part mitigation: inject the language cookie
  * preemptively, and as a fallback, click through the interstitial if it still appears.
  */
-export async function applyLanguageCookies(context: BrowserContext): Promise<void> {
+const LANGUAGE_BY_DOMAIN: Record<string, string> = {
+  "shopee.tw": "zh-Hant",
+  "shopee.co.id": "id",
+};
+
+export async function applyLanguageCookies(context: BrowserContext, domain = "shopee.tw"): Promise<void> {
+  const lang = LANGUAGE_BY_DOMAIN[domain] ?? "en";
   await context
     .addCookies([
-      { name: "language", value: "zh-Hant", domain: ".shopee.tw", path: "/" },
-      { name: "_lang", value: "zh-Hant", domain: ".shopee.tw", path: "/" },
+      { name: "language", value: lang, domain: `.${domain}`, path: "/" },
+      { name: "_lang", value: lang, domain: `.${domain}`, path: "/" },
     ])
     .catch(() => undefined);
 }
 
 export async function dismissLanguageInterstitial(page: Page): Promise<void> {
   await page
-    .locator("text=/繁體中文|台灣|Taiwan/i")
+    .locator("text=/繁體中文|台灣|Taiwan|Bahasa Indonesia/i")
     .first()
     .click({ timeout: 5000 })
     .catch(() => undefined);

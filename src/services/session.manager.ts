@@ -35,6 +35,19 @@ const CHROME_EXECUTABLE_PATH =
     ? `${REBROWSER_CACHE_DIR}/chrome-headless-shell-${MAC_ARCH}/chrome-headless-shell`
     : `${REBROWSER_CACHE_DIR}/chrome-${MAC_ARCH}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`);
 
+// Which Shopee region to scrape. Defaults to shopee.tw (this task's actual target); can be
+// overridden for validation/testing against another region's platform (e.g. shopee.co.id),
+// which shares the same get_pc/get_rw API shape and anti-bot behavior — see README.md.
+const SHOPEE_DOMAIN = process.env.SHOPEE_DOMAIN || "shopee.tw";
+const LOCALE_BY_DOMAIN: Record<string, { locale: string; timezoneId: string }> = {
+  "shopee.tw": { locale: "zh-TW", timezoneId: "Asia/Taipei" },
+  "shopee.co.id": { locale: "id-ID", timezoneId: "Asia/Jakarta" },
+};
+const { locale: SHOPEE_LOCALE, timezoneId: SHOPEE_TIMEZONE } = LOCALE_BY_DOMAIN[SHOPEE_DOMAIN] ?? {
+  locale: "en-US",
+  timezoneId: "UTC",
+};
+
 const SESSION_TTL_MS = Number(process.env.SESSION_REFRESH_INTERVAL_MS ?? 10 * 60 * 1000);
 const NAV_TIMEOUT_MS = 30_000;
 
@@ -119,8 +132,8 @@ class SessionManager {
           headless: HEADLESS,
           executablePath: CHROME_EXECUTABLE_PATH,
           proxy: proxyUrl ? parseProxyForPlaywright(proxyUrl) : undefined,
-          locale: "zh-TW",
-          timezoneId: "Asia/Taipei",
+          locale: SHOPEE_LOCALE,
+          timezoneId: SHOPEE_TIMEZONE,
           viewport: { width: 1366, height: 768 },
         })) as unknown as BrowserContext;
         logger.info(
@@ -141,8 +154,8 @@ class SessionManager {
   private async createEphemeralContext(proxyUrl: string | null): Promise<BrowserContext> {
     const browser = await this.getBrowser();
     return browser.newContext({
-      locale: "zh-TW",
-      timezoneId: "Asia/Taipei",
+      locale: SHOPEE_LOCALE,
+      timezoneId: SHOPEE_TIMEZONE,
       viewport: { width: 1366, height: 768 },
       proxy: proxyUrl ? parseProxyForPlaywright(proxyUrl) : undefined,
       storageState: getStorageStateOption(),
@@ -177,7 +190,7 @@ class SessionManager {
         .filter(Boolean)
         .map((pair) => {
           const idx = pair.indexOf("=");
-          return { name: pair.slice(0, idx), value: pair.slice(idx + 1), domain: ".shopee.tw", path: "/" };
+          return { name: pair.slice(0, idx), value: pair.slice(idx + 1), domain: `.${SHOPEE_DOMAIN}`, path: "/" };
         });
       await context.addCookies(cookies);
 
@@ -278,13 +291,13 @@ class SessionManager {
       });
 
       // Technique #3: preempt the first-visit language/region interstitial.
-      await applyLanguageCookies(context);
+      await applyLanguageCookies(context, SHOPEE_DOMAIN);
 
-      const url = `https://shopee.tw/a-i.${params.storeId}.${params.dealId}`;
+      const url = `https://${SHOPEE_DOMAIN}/a-i.${params.storeId}.${params.dealId}`;
 
       // Technique #7 (opsional)
       if (isWarmupEnabled()) {
-        await warmupHomepage(p);
+        await warmupHomepage(p, SHOPEE_DOMAIN);
       }
 
       await p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((err) => {
