@@ -334,7 +334,7 @@ Temuan penting dari eksperimen: wall ini muncul **konsisten pada device yang sam
 
 Implikasi praktis: untuk volume testing sungguhan (200+ item, durasi lama), **proxy rotation sungguh-sungguh diperlukan** (bukan opsional) agar tidak ada satu IP yang mengakumulasi cukup banyak request untuk memicu wall ini — sesuai desain `proxy.manager.ts` yang sudah pluggable untuk kebutuhan ini.
 
-**Update — pengujian dengan IP bersih + browser hardened penuh:** untuk menguji ulang hipotesis rate/velocity-based di atas dengan lebih ketat, dilakukan eksperimen tambahan: browsing manual (bukan lewat API) ke `shopee.tw` menggunakan kombinasi **IP residential Taiwan yang baru & terverifikasi bersih** (geo-targeted via suffix `__cr.tw` pada proxy, bukan IP yang sudah dipakai testing sebelumnya) **dan** browser hasil stack anti-deteksi proyek ini sendiri (`rebrowser-playwright` + stealth, lihat `scripts/browse.ts`) — bukan Chrome biasa tanpa mitigasi apa pun.
+**Update — pengujian dengan IP bersih + browser hardened penuh:** untuk menguji ulang hipotesis rate/velocity-based di atas dengan lebih ketat, dilakukan eksperimen tambahan: browsing manual (bukan lewat API) ke `shopee.tw` menggunakan kombinasi **proxy residential berbayar (DataImpulse) dengan geo-targeting Taiwan** — bukan proxy gratis/publik — untuk memastikan IP yang baru & terverifikasi bersih (geo-targeted via suffix `__cr.tw` pada kredensial proxy, bukan IP yang sudah dipakai testing sebelumnya) **dan** browser hasil stack anti-deteksi proyek ini sendiri (`rebrowser-playwright` + stealth, lihat `scripts/browse.ts`) — bukan Chrome biasa tanpa mitigasi apa pun.
 
 Hasilnya: wall verifikasi/login tetap muncul, **bukan hanya untuk 2 item contoh yang sudah ter-flag, tapi untuk navigasi umum ke `shopee.tw` sekalipun** (sebelum sempat mengklik produk apa pun). Ini titik data penting yang mempersempit hipotesis:
 
@@ -380,7 +380,7 @@ Hasilnya, untuk ketiga kalinya secara independen: **`get_pc` tetap `error: 90309
 
 | # | Variabel | Cara isolasi | Hasil |
 |---|---|---|---|
-| 1 | Jaringan/IP | Proxy residential Taiwan yang bersih & baru | Tetap gagal |
+| 1 | Jaringan/IP | Proxy residential **berbayar** dengan geo-targeting Taiwan (DataImpulse, bersih & baru) | Tetap gagal |
 | 2 | Tooling stealth | `BROWSER_ENGINE=vanilla` (tanpa mitigasi apa pun) | Tetap gagal |
 | 3 | Status login | `AUTH_MODE=login` dengan sesi akun asli | Tetap gagal |
 | 4 | Binary browser | `BROWSER_CHANNEL=chrome` (Chrome stable asli) | Tetap gagal |
