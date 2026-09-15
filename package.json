@@ -19,6 +19,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "https-proxy-agent": "^5.0.1",
+    "patchright": "^1.63.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
     "playwright-extra": "^4.3.6",

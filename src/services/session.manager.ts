@@ -45,6 +45,11 @@ const CHROME_EXECUTABLE_PATH =
 // Chrome-for-Testing revision they were built against.
 const BROWSER_CHANNEL = process.env.BROWSER_CHANNEL || undefined;
 
+// "patchright" ships/installs its own patched Chromium binary (in Playwright's standard
+// ms-playwright cache, a different revision than rebrowser-playwright's pinned Chrome-for-
+// Testing build) — never point it at CHROME_EXECUTABLE_PATH, let it resolve its own binary.
+const USE_ENGINE_DEFAULT_BINARY = process.env.BROWSER_ENGINE === "patchright";
+
 // Which Shopee region to scrape. Defaults to shopee.tw (this task's actual target); can be
 // overridden for validation/testing against another region's platform (e.g. shopee.co.id),
 // which shares the same get_pc/get_rw API shape and anti-bot behavior — see README.md.
@@ -116,7 +121,11 @@ class SessionManager {
     // which is a structurally-near-identical but nominally distinct type from rebrowser-playwright's.
     this.browser = (await chromium.launch({
       headless: HEADLESS,
-      ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : { executablePath: CHROME_EXECUTABLE_PATH }),
+      ...(BROWSER_CHANNEL
+        ? { channel: BROWSER_CHANNEL }
+        : USE_ENGINE_DEFAULT_BINARY
+          ? {}
+          : { executablePath: CHROME_EXECUTABLE_PATH }),
     })) as unknown as Browser;
     logger.info("Playwright browser launched");
     return this.browser;
@@ -140,7 +149,11 @@ class SessionManager {
         // persistent profile, log in manually once inside that profile via PERSISTENT_PROFILE.
         this.persistentContext = (await chromium.launchPersistentContext(PROFILE_DIR, {
           headless: HEADLESS,
-          ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : { executablePath: CHROME_EXECUTABLE_PATH }),
+          ...(BROWSER_CHANNEL
+        ? { channel: BROWSER_CHANNEL }
+        : USE_ENGINE_DEFAULT_BINARY
+          ? {}
+          : { executablePath: CHROME_EXECUTABLE_PATH }),
           proxy: proxyUrl ? parseProxyForPlaywright(proxyUrl) : undefined,
           locale: SHOPEE_LOCALE,
           timezoneId: SHOPEE_TIMEZONE,
