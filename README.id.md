@@ -454,6 +454,29 @@ Hasil: **`get_pc` dan `get_rw` tetap mengembalikan `error: 90309999`.** Ini mele
 
 <sub>Sumber: [shopee-mcp](https://github.com/bintangtimurlangit/shopee-mcp), [tail-fin-shopee](https://docs.rs/tail-fin-shopee/latest/tail_fin_shopee/).</sub>
 
+### Jalur tertutup: decode blob opaque di response error
+
+Setiap payload `90309999` yang tertangkap sepanjang investigasi ini menyertakan sebuah field (`"6"."0"` di envelope response) berisi string mirip base64url yang panjang, mis. `gqRjZGVrxHSFomtptTE0MjUxOnRyYWNraW5nX2lkX2tleaJrdtEAAqRhbGdv...`. Ini ditandai sejak awal sebagai kemungkinan petunjuk — kalau itu token diagnostik plaintext atau ter-encode lemah, decode-nya bisa mengungkap sinyal spesifik apa yang memicu blokir.
+
+Ini sudah diuji (offline, tanpa request live sama sekali — zero risiko akun/proxy). Blob-nya berhasil di-decode bersih sebagai **MessagePack**, mengungkap struktur envelope-encryption yang rapi:
+
+```text
+{
+  "cdek": {                          // Data Encryption Key yang di-wrap
+    "ki": "14251:tracking_id_key",   // ID + nama key (KMS internal Shopee)
+    "kv": 2,                         // versi key
+    "algo": 100,                     // ID algoritma
+    "dek": null,
+    "ct": <64 byte>                  // DEK itu sendiri, terenkripsi ("ct" = ciphertext)
+  },
+  "ciphertext": <911 byte>           // payload asli, dienkripsi pakai DEK di atas
+}
+```
+
+Ini skema **envelope/KMS encryption** standar: key yang dibutuhkan untuk mendekripsi payload asli (`ciphertext`) itu sendiri terenkripsi (`cdek`), dan key *itu* cuma bisa di-resolve lewat sistem key-management internal Shopee, direferensikan lewat nama (`"14251:tracking_id_key"`, versi 2) — key yang proyek ini tidak punya akses dan tidak ada cara legitim untuk mendapatkannya.
+
+**Kesimpulan: ini jalan buntu yang tertutup, bukan petunjuk yang belum selesai dikejar.** Blob ini memang didesain opaque secara kriptografis — token tracking/korelasi anti-fraud internal yang hanya bisa dibaca backend Shopee sendiri, dikirim balik ke client murni untuk dipakai sebagai correlation ID di request berikutnya, bukan sesuatu yang pernah dimaksudkan untuk membocorkan info diagnostik ke pemanggil. Tidak ada usaha lebih lanjut untuk mendekripsi `ciphertext` itu sendiri, karena itu butuh membobol atau mendapatkan private key KMS Shopee — di luar cakupan apa pun yang bisa dicapai dari sisi client.
+
 ### Catatan: DNS hijacking di jaringan tertentu (mis. ISP Indonesia)
 
 Saat pengembangan, ditemukan bahwa beberapa jaringan ISP (mis. Telkomsel/"internetbaik") melakukan **DNS hijacking** untuk domain `shopee.tw` — resolusi DNS dialihkan ke IP block-page milik ISP, bukan IP asli Shopee, sehingga baik akses langsung maupun lewat sebagian proxy (yang meresolusi hostname secara lokal, mis. SOCKS4 klasik) akan gagal total meski kode maupun proxy-nya sendiri berfungsi normal.

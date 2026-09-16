@@ -454,6 +454,29 @@ Result: **`get_pc` and `get_rw` both still returned `error: 90309999`.** This we
 
 <sub>Sources: [shopee-mcp](https://github.com/bintangtimurlangit/shopee-mcp), [tail-fin-shopee](https://docs.rs/tail-fin-shopee/latest/tail_fin_shopee/).</sub>
 
+### Closed avenue: decoding the error response's opaque blob
+
+Every `90309999` payload captured throughout this investigation includes a field (`"6"."0"` in the response envelope) containing what looks like a long base64url string, e.g. `gqRjZGVrxHSFomtptTE0MjUxOnRyYWNraW5nX2lkX2tleaJrdtEAAqRhbGdv...`. This was flagged early on as a potential lead — if it were a plaintext or weakly-encoded diagnostic token, decoding it might reveal exactly which signal tripped the block.
+
+This was tested (offline, no live requests involved — zero account/proxy risk). The blob does decode cleanly as **MessagePack**, revealing a proper envelope-encryption structure:
+
+```text
+{
+  "cdek": {                          // wrapped Data Encryption Key
+    "ki": "14251:tracking_id_key",   // key ID + name (Shopee's internal KMS)
+    "kv": 2,                         // key version
+    "algo": 100,                     // algorithm ID
+    "dek": null,
+    "ct": <64 bytes>                 // the DEK itself, encrypted ("ct" = ciphertext)
+  },
+  "ciphertext": <911 bytes>          // the actual payload, encrypted using the DEK above
+}
+```
+
+This is a standard **envelope/KMS encryption scheme**: the key needed to decrypt the actual payload (`ciphertext`) is itself encrypted (`cdek`), and *that* key is only resolvable via Shopee's internal key-management system, referenced by name (`"14251:tracking_id_key"`, version 2) — a key this project has no access to and has no legitimate way to obtain.
+
+**Conclusion: this is a closed dead end, not an unfinished lead.** The blob is cryptographically opaque by design — an internal anti-fraud tracking/correlation token meant to be readable only by Shopee's own backend, echoed back to the client purely for use as a correlation ID in follow-up requests, not something ever intended to leak diagnostic information to the caller. No further effort was spent trying to decrypt `ciphertext` itself, since doing so would require breaking or obtaining Shopee's private KMS key — outside the scope of anything achievable from the client side.
+
 ### Note: DNS hijacking on certain networks (e.g. Indonesian ISPs)
 
 During development, it was found that some ISP networks (e.g. Telkomsel/"internetbaik") perform **DNS hijacking** for the `shopee.tw` domain — DNS resolution is redirected to an ISP-owned block-page IP instead of Shopee's real IP, so both direct access and access via some proxies (that resolve the hostname locally, e.g. classic SOCKS4) fail completely even though the code and the proxy itself work normally.
