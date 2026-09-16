@@ -10,6 +10,7 @@ import {
   warmupHomepage,
   isWarmupEnabled,
   navigateViaClick,
+  warmupWithOrganicSearch,
   isClickNavigationEnabled,
   blockStaticAssets,
   isResourceBlockingEnabled,
@@ -393,11 +394,14 @@ class SessionManager {
       if (useClickNav) {
         // Technique: reach the exact target via a genuine clicked navigation instead of a
         // bare page.goto() — validated empirically to matter (see README). Requires landing
-        // on some page first so there's a document to inject the link into.
+        // on some page first so there's a document to inject the link into. A short organic
+        // search interaction runs first — a "cold" injected click with zero prior activity
+        // was found insufficient on its own in live testing (see README).
         await p.goto(`https://${SHOPEE_DOMAIN}/`, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((err) => {
           throw new ScrapeError("BROWSER_FAILURE", `page.goto (homepage for click-navigation) failed: ${(err as Error).message}`);
         });
         await dismissLanguageInterstitial(p);
+        await warmupWithOrganicSearch(p);
         await navigateViaClick(p, url).catch((err) => {
           throw new ScrapeError("BROWSER_FAILURE", `navigateViaClick failed: ${(err as Error).message}`);
         });

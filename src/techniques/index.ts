@@ -33,7 +33,7 @@
 export { createBrowserEngine, getConfiguredBrowserEngine, type BrowserEngine } from "./browserEngine";
 export { applyLanguageCookies, dismissLanguageInterstitial } from "./languageInterstitial";
 export { warmupHomepage, isWarmupEnabled } from "./navigationWarmup";
-export { navigateViaClick, isClickNavigationEnabled } from "./clickNavigation";
+export { navigateViaClick, warmupWithOrganicSearch, isClickNavigationEnabled } from "./clickNavigation";
 export { blockStaticAssets, isResourceBlockingEnabled } from "./resourceBlocking";
 export { isTrafficVerificationWall } from "./trafficWallDetector";
 export { CircuitBreaker } from "./circuitBreaker";
