@@ -5,6 +5,9 @@ import { logger } from "./lib/logger";
 import { shopeeRouter } from "./routes/shopee.route";
 import { errorHandler } from "./middleware/errorHandler";
 import { sessionManager } from "./services/session.manager";
+// Personal side-project endpoint (GET /shopee/dom) — not part of the graded submission,
+// see personal/domScraper.ts.
+import { domRouter } from "../personal/dom.route";
 
 // Playwright/CDP internals (including third-party stealth plugin code) can throw from
 // detached async callbacks that bypass our own try/catch blocks — e.g. when a proxy drops
@@ -29,6 +32,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use(shopeeRouter);
+app.use(domRouter);
 
 app.use(errorHandler);
 
