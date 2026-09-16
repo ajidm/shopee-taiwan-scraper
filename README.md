@@ -419,6 +419,32 @@ Kesimpulan dari temuan ini: masalahnya **presisi** pada data yang bergantung pad
 
 **Sudut yang sudah diuji (konfirmasi ke-7):** emulasi mobile device (`DEVICE_EMULATION=mobile` — viewport 390×844, `isMobile: true`, `hasTouch: true`, User-Agent iOS Safari, lihat `src/services/session.manager.ts`), dengan dugaan trust-bias Shopee lebih tinggi terhadap traffic mobile-web. Diuji dengan sesi login yang sama: **tetap `error: 90309999`**. Catatan menarik dari pengujian ini: bahkan dalam mode mobile emulation, halaman Shopee sendiri tetap memanggil `get_pc` (bukan `get_rw`) — mengindikasikan `get_rw` kemungkinan memang khusus untuk traffic app native (`x-api-source: rn`), bukan mobile *web* browser, sehingga dugaan "pivot ke `get_rw` + mobile UA" dari salah satu analisis eksternal tidak benar-benar applicable untuk skenario mobile-web seperti ini.
 
+### Analisis dua proyek referensi lain: "device-cookie binding" sebagai mekanisme yang paling menjelaskan
+
+Dua proyek publik lain (satu MCP server Shopee, satu crate Rust untuk interaksi API Shopee) dipelajari secara mendalam (tanpa live-testing lanjutan, mengingat catatan eskalasi risk-scoring di atas). Keduanya independen satu sama lain, dan keduanya **konvergen ke kesimpulan yang sama** — yang juga paling koheren menjelaskan kenapa `AUTH_MODE=login` kami gagal walau cookies-nya 100% valid.
+
+**Proyek MCP server**: memakai browser Chromium yang di-patch di **level binary** (bukan patch JS/CDP command seperti `rebrowser-playwright`/`patchright` yang sudah kami coba — kelas mitigasi commercial/closed-source yang lebih dalam), dijalankan headed, dan — poin paling relevan — memakai **persistent Chrome profile yang di-login sekali lalu dipakai berulang dari waktu ke waktu**, bukan `storageState` (snapshot cookies+localStorage). Dokumentasinya eksplisit menyebut plain fetch, headless Chromium, dan hand-rolled request semuanya kena `error 90309999` — sama persis temuan kami.
+
+**Proyek crate Rust**: mengonfirmasi independen bahwa TLS fingerprint bukan penyebab utama (diuji dengan emulasi TLS Chrome 145 lewat `wreq`, tetap `90309999`), dengan kutipan kunci:
+
+> "The signal Shopee scores on isn't headless-detection or behavioral telemetry — it's deeper (**browser-fingerprint cleanliness, device-cookie binding**)."
+
+Solusinya: attach CDP langsung ke Chrome **asli milik user yang sudah login** (`127.0.0.1:9222`) — bukan browser baru dengan cookies disuntik.
+
+**Mengapa ini penting.** "Device-cookie binding" menjelaskan persis kenapa `AUTH_MODE=login` kami gagal: cookies kemungkinan terikat ke *device fingerprint* spesifik yang menerbitkannya, bukan cuma soal validitas cookie itu sendiri. `storageState` kami meng-copy cookies+localStorage ke context Playwright yang **baru dan bersih** — di mata Shopee, itu bukan device yang sama walau cookies-nya identik byte-per-byte.
+
+Ini juga memetakan tiga pendekatan berbeda yang **belum** semuanya kami coba dengan benar:
+
+| Pendekatan | Sudah dicoba? | Hasil |
+|---|---|---|
+| Browser baru + `storageState` (cookies disuntik) | ✅ (`AUTH_MODE=login`) | Gagal — device fingerprint tidak match |
+| CDP-attach ke Chrome **default** milik user | ✅ (dicoba, terhalang) | Diblokir **Chrome sendiri** (hardening keamanan profil default), belum sempat sampai ke Shopee |
+| Profil Chrome **dedicated terpisah**, login sekali, dipakai ulang persisten dari waktu ke waktu (bukan snapshot) | ❌ Belum pernah | — |
+
+Baris ketiga adalah celah nyata di antara dua percobaan sebelumnya — `PERSISTENT_PROFILE=true` sudah ada di `session.manager.ts`, tapi belum pernah benar-benar dites dengan login sungguhan di dalamnya dan dipakai berulang dari waktu ke waktu (bukan sekali pakai). Ini arah paling menjanjikan untuk eksperimen lanjutan, dengan syarat memakai akun/profil baru yang belum ter-flag (bukan akun yang sudah kena eskalasi CAPTCHA di atas), dan dijalankan dengan sangat konservatif (jeda waktu nyata antar penggunaan, bukan langsung volume testing) untuk menghindari pengulangan eskalasi yang sama.
+
+<sub>Sumber: [shopee-mcp](https://github.com/bintangtimurlangit/shopee-mcp), [tail-fin-shopee](https://docs.rs/tail-fin-shopee/latest/tail_fin_shopee/).</sub>
+
 ### Catatan: DNS hijacking di jaringan tertentu (mis. ISP Indonesia)
 
 Saat pengembangan, ditemukan bahwa beberapa jaringan ISP (mis. Telkomsel/"internetbaik") melakukan **DNS hijacking** untuk domain `shopee.tw` — resolusi DNS dialihkan ke IP block-page milik ISP, bukan IP asli Shopee, sehingga baik akses langsung maupun lewat sebagian proxy (yang meresolusi hostname secara lokal, mis. SOCKS4 klasik) akan gagal total meski kode maupun proxy-nya sendiri berfungsi normal.
