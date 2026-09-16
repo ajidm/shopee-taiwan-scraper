@@ -237,6 +237,15 @@ class SessionManager {
 
       const page = await context.newPage();
       try {
+        // A freshly-created page starts at about:blank, which has no valid origin — fetch()
+        // from there is rejected by the browser itself (TypeError: Failed to fetch), before
+        // this ever reaches Shopee. Navigate to the same page the session was captured from
+        // (its own referer) first, so the fetch executes from a real, same-origin document.
+        const refererUrl = session.headers.referer || `https://${SHOPEE_DOMAIN}/`;
+        await page.goto(refererUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((err) => {
+          throw new ScrapeError("BROWSER_FAILURE", `In-browser fetch: failed to navigate to referer page: ${(err as Error).message}`);
+        });
+
         const result = await page.evaluate(
           async ({ fetchUrl, headers }) => {
             const res = await fetch(fetchUrl, { headers, credentials: "include" });
