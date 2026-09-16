@@ -19,6 +19,7 @@ REST API (TypeScript) yang mengambil data detail produk dari Shopee Taiwan (`get
 - [Metode & Eksperimen yang Dicoba](#metode--eksperimen-yang-dicoba)
 - [Analisis Eksternal & Perbaikan Lanjutan](#analisis-eksternal--perbaikan-lanjutan)
 - [Batasan yang Diketahui](#batasan-yang-diketahui)
+- [Ringkasan Blocker](#ringkasan-blocker)
 
 ## Arsitektur
 
@@ -533,3 +534,33 @@ Jika kedua IP berbeda jauh (satu milik ISP lokal, satu milik infrastruktur Shope
 **Update — pemblokiran juga terjadi di level SNI, bukan cuma DNS.** Bahkan saat IP asli Shopee dipaksa secara eksplisit (`curl --resolve shopee.tw:443:<IP-asli>`, melewati DNS hijack), koneksi TLS tetap gagal dengan `Connection reset by peer` tepat setelah `ClientHello` (pada titik SNI `shopee.tw` terkirim plaintext) — pola khas pemblokiran DPI (deep packet inspection) berbasis SNI oleh jaringan, di luar kendali aplikasi/kode. Praktisnya: pada jaringan yang kena kombinasi DNS hijack + SNI block ini, **koneksi langsung (tanpa proxy) ke `shopee.tw` mustahil berhasil sama sekali** — bukan soal deteksi anti-bot Shopee, tapi jaringan lokal itu sendiri yang memutus koneksi sebelum sempat sampai ke Shopee. Ini menjelaskan mengapa proxy (yang membuat koneksi TLS keluar dengan SNI ke domain proxy, bukan `shopee.tw`, dari luar jaringan yang diblokir) tetap jadi mitigasi yang diperlukan di jaringan seperti ini — bukan cuma untuk menghindari IP-reputation Shopee, tapi juga untuk melewati blokir jaringan lokal itu sendiri.
 
 Workaround bila mengalami hal serupa: ganti DNS resolver sistem ke DNS pihak ketiga yang tidak dihijack (mis. `1.1.1.1`/`8.8.8.8` via DoH/DoT), atau gunakan proxy/VPN yang melakukan resolusi DNS **di sisi remote** (SOCKS5 dengan `--socks5-hostname`, bukan SOCKS4 klasik) sehingga resolusi tidak bergantung pada DNS lokal yang sudah dihijack.
+
+## Ringkasan Blocker
+
+Rekap konsolidasi semua hal yang menghalangi proyek ini mencapai scraping yang benar-benar reliable, berlapis dari terluar ke terdalam:
+
+**1. Sistem anti-bot Shopee (`error: 90309999`)** — blocker inti. Muncul di level application (bukan edge/WAF), pada `get_pc`/`get_rw` dan kadang pada navigasi halaman itu sendiri.
+
+**2. Sembilan variabel independen tereliminasi, semuanya tetap gagal:**
+
+| # | Variabel | Hasil |
+|---|---|---|
+| 1 | Jaringan/IP (proxy residential Taiwan berbayar) | Gagal |
+| 2 | Tooling stealth (`vanilla`, tanpa mitigasi) | Gagal |
+| 3 | Status login (`AUTH_MODE=login`, storageState) | Gagal |
+| 4 | Binary browser (Chrome stable asli) | Gagal |
+| 5 | Headless vs headful | Gagal |
+| 6 | Kedalaman patch CDP (`patchright`) | Gagal |
+| 7 | Device emulation (mobile) | Gagal |
+| 8 | Profil persisten baru (bukan storageState) | Gagal |
+| 9 | Klik-navigasi + warmup organik (direplikasi via kode produksi) | Tidak reliable direproduksi |
+
+**3. Blocker jaringan lokal (spesifik lingkungan):** DNS hijacking (ISP mengalihkan resolusi `shopee.tw` ke IP block-page miliknya) ditambah SNI-based DPI block (TLS diputus tepat setelah `ClientHello`, bahkan dengan IP asli dipaksa) — proxy diperlukan di sini murni untuk lolos dari jaringan lokal, terlepas dari apa pun di sisi Shopee.
+
+**4. Blocker akses/akun:** akun Shopee spesifik per region (butuh nomor telepon Taiwan untuk akun `shopee.tw`) — proyek ini cuma punya akun Indonesia, jadi pengujian `AUTH_MODE=login`/profil persisten tidak pernah bisa divalidasi langsung ke target asli `shopee.tw`. Terpisah dari itu, akses guest/anonim dibatasi luas — dikonfirmasi lewat otomasi maupun browsing manual manusia.
+
+**5. Blocker tersulit — degradasi risk-score akun berbasis velocity.** Dua keberhasilan nyata yang terdokumentasi di proyek ini terjadi tepat setelah risk score akun uji sempat "mendingin" ~1 hari pasca eskalasi CAPTCHA sebelumnya. **Item yang persis sama**, dengan **ingredients teknis identik** (profil persisten login yang sama, teknik navigasi yang sama), gagal lagi cuma beberapa jam kemudian setelah lebih banyak testing otomatis. Artinya: tidak ada teknik client-side yang bisa mengungguli sinyal risiko akun yang terus terakumulasi — dan ini langsung menjelaskan kenapa syarat volume 200+ request/30-60 menit di soal secara struktural sulit: makin banyak volume yang dikirim, makin cepat degradasi ini tampaknya berlipat ganda.
+
+**6. Blocker operasional:** proxy residential yang intermiten (port sticky kadang perlu dicoba ulang dari range port provider) dan satu bug plumbing nyata yang ditemukan & diperbaiki (in-browser fetch gagal dari halaman kosong `about:blank`, tidak ada hubungannya dengan Shopee, sudah diperbaiki).
+
+**Kesimpulan akhir:** blocker-nya berlapis — jaringan lokal, lalu anti-bot Shopee, lalu risk-scoring berbasis velocity di level akun — dan tidak ada kombinasi teknik client-side publik mana pun yang diuji di sini yang bisa secara reliable menembus lapisan ketiga. Menyelesaikannya kemungkinan besar butuh akun `shopee.tw` asli dengan histori pemakaian organik jangka panjang dan volume request yang sangat konservatif, sesuatu yang di luar jangkauan akses/pengujian aman proyek ini saat ini.

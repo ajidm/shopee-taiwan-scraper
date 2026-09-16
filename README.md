@@ -19,6 +19,7 @@ A TypeScript REST API that fetches Shopee Taiwan product-detail data (`get_pc`/`
 - [Methods & Experiments Tried](#methods--experiments-tried)
 - [External Analysis & Further Fixes](#external-analysis--further-fixes)
 - [Known Limitations](#known-limitations)
+- [Summary of Blockers](#summary-of-blockers)
 
 ## Architecture
 
@@ -533,3 +534,33 @@ If the two IPs are very different (one belongs to a local ISP, the other to Shop
 **Update — the block also happens at the SNI level, not just DNS.** Even when Shopee's real IP is explicitly forced (`curl --resolve shopee.tw:443:<real-IP>`, bypassing the DNS hijack), the TLS connection still fails with `Connection reset by peer` right after the `ClientHello` (at the point where the `shopee.tw` SNI is sent in plaintext) — a classic pattern of network-level DPI (deep packet inspection) SNI-based blocking, outside the application/code's control. In practice: on a network with this combined DNS-hijack + SNI-block, **a direct (no-proxy) connection to `shopee.tw` is impossible to succeed at all** — not a Shopee anti-bot detection issue, but the local network itself cutting the connection before it ever reaches Shopee. This explains why a proxy (which makes an outbound TLS connection with the SNI set to the proxy's own domain, not `shopee.tw`, from outside the blocked network) remains a necessary mitigation on networks like this — not just to avoid Shopee's IP-reputation checks, but also to get past the local network block itself.
 
 Workaround if you hit something similar: switch your system's DNS resolver to a third-party one that isn't hijacked (e.g. `1.1.1.1`/`8.8.8.8` via DoH/DoT), or use a proxy/VPN that resolves DNS **on the remote side** (SOCKS5 with `--socks5-hostname`, not classic SOCKS4) so resolution doesn't depend on the already-hijacked local DNS.
+
+## Summary of Blockers
+
+A consolidated recap of everything standing between this project and a fully reliable scrape, layered from outermost to innermost:
+
+**1. Shopee's anti-bot system (`error: 90309999`)** — the core blocker. Appears at the application layer (not edge/WAF), on `get_pc`/`get_rw` and sometimes on page navigation itself.
+
+**2. Nine independent variables eliminated, all still failing:**
+
+| # | Variable | Result |
+|---|---|---|
+| 1 | Network/IP (paid Taiwan residential proxy) | Failed |
+| 2 | Stealth tooling (`vanilla`, no mitigation) | Failed |
+| 3 | Login status (`AUTH_MODE=login`, storageState) | Failed |
+| 4 | Browser binary (real Chrome stable) | Failed |
+| 5 | Headless vs. headful | Failed |
+| 6 | Depth of CDP patching (`patchright`) | Failed |
+| 7 | Device emulation (mobile) | Failed |
+| 8 | Fresh persistent profile (not storageState) | Failed |
+| 9 | Click-navigation + organic warmup (replicated via production code) | Not reliably reproducible |
+
+**3. Local network blockers (environment-specific):** DNS hijacking (ISP redirects `shopee.tw` resolution to its own block-page IP) plus SNI-based DPI blocking (TLS reset right after `ClientHello`, even with the real IP forced) — a proxy is required here just to escape the local network, independent of anything Shopee-side.
+
+**4. Access/account blockers:** Shopee accounts are region-specific (a Taiwan phone number is required for a `shopee.tw` account) — this project only had an Indonesian account available, so `AUTH_MODE=login`/persistent-profile testing could never be validated directly against the actual `shopee.tw` target. Separately, guest/anonymous access is broadly restricted — confirmed via both automation and manual human browsing.
+
+**5. The hardest blocker — velocity-based account risk-score decay.** The two real successes documented in this project happened right after the test account's risk score had ~a day to cool down from a prior CAPTCHA escalation. The *exact same item*, with *identical technical ingredients* (same persistent logged-in profile, same navigation technique), failed again just hours later after more automated testing. This means: no client-side technique can outrun an account's own accumulating risk signal — and it directly explains why the task's 200+ requests / 30-60 minute volume requirement is structurally difficult: the more volume sent, the faster this degradation appears to compound.
+
+**6. Operational blockers:** an intermittent residential proxy (sticky ports sometimes need retrying across the provider's port range) and a real plumbing bug found and fixed along the way (in-browser fetch failing from a blank `about:blank` page, unrelated to Shopee, now resolved).
+
+**Bottom line:** the blockers are layered — local network, then Shopee's anti-bot, then account-level velocity risk-scoring — and no combination of publicly available client-side techniques tested here can reliably clear the third layer. Solving it would most plausibly require a genuine `shopee.tw` account with real, long-term organic usage history and very conservative request volume, which was outside what this project could access or safely test.
