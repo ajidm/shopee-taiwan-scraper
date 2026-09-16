@@ -164,7 +164,7 @@ Techniques #2, #7, #9, #11, and the bonus persistent-profile feature are **optio
 | Env Var | Value | Technique | Default |
 |---|---|---|---|
 | `BROWSER_ENGINE` | `rebrowser` \| `vanilla-stealth` \| `vanilla` \| `patchright` | #2 — browser engine + stealth | `rebrowser` |
-| `NAVIGATION_STRATEGY` | `direct` \| `warmup` \| `click` | #7 — homepage warm-up navigation / click-based navigation | `direct` |
+| `NAVIGATION_STRATEGY` | `direct` \| `warmup` \| `click` \| `auto` | #7 — homepage warm-up navigation / click-based navigation | `direct` |
 | `BLOCK_STATIC_ASSETS` | `true` \| `false` | #9 — resource blocking | `false` |
 | `IN_BROWSER_FETCH` | `true` \| `false` | #11 — fetch via `page.evaluate()` | `true` |
 | `PERSISTENT_PROFILE` | `true` \| `false` | bonus — persistent browser profile | `false` |
@@ -194,6 +194,10 @@ BLOCK_STATIC_ASSETS=true npm run dev
 
 # Shorten the circuit breaker cooldown to 1 minute for quick testing (don't use in production)
 BLOCKED_COOLDOWN_MS=60000 npm run dev
+
+# Try direct navigation first, only pay click-navigation's extra latency if direct fails
+# (recommended when you don't know in advance which will work for a given product/session)
+NAVIGATION_STRATEGY=auto npm run dev
 ```
 
 All combinations can also be set permanently in `.env` (see `.env.example` for the full list + explanation of each option). For a programmatic map of technique → code file → env var, see the comments in `src/techniques/index.ts`.

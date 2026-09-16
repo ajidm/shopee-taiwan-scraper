@@ -164,7 +164,7 @@ Teknik #2, #7, #9, #11, dan bonus persistent-profile **opsional** dan dipilih le
 | Env Var | Nilai | Teknik | Default |
 |---|---|---|---|
 | `BROWSER_ENGINE` | `rebrowser` \| `vanilla-stealth` \| `vanilla` \| `patchright` | #2 — engine browser + stealth | `rebrowser` |
-| `NAVIGATION_STRATEGY` | `direct` \| `warmup` \| `click` | #7 — navigasi warm-up homepage dulu / navigasi berbasis klik | `direct` |
+| `NAVIGATION_STRATEGY` | `direct` \| `warmup` \| `click` \| `auto` | #7 — navigasi warm-up homepage dulu / navigasi berbasis klik | `direct` |
 | `BLOCK_STATIC_ASSETS` | `true` \| `false` | #9 — resource blocking | `false` |
 | `IN_BROWSER_FETCH` | `true` \| `false` | #11 — fetch lewat `page.evaluate()` | `true` |
 | `PERSISTENT_PROFILE` | `true` \| `false` | bonus — profil browser persisten | `false` |
@@ -194,6 +194,10 @@ BLOCK_STATIC_ASSETS=true npm run dev
 
 # Perpendek cooldown circuit breaker jadi 1 menit untuk testing cepat (jangan dipakai di produksi)
 BLOCKED_COOLDOWN_MS=60000 npm run dev
+
+# Coba navigasi direct dulu, baru bayar latensi ekstra click-navigation kalau direct gagal
+# (direkomendasikan kalau belum tahu mana yang akan berhasil untuk produk/sesi tertentu)
+NAVIGATION_STRATEGY=auto npm run dev
 ```
 
 Semua kombinasi bisa juga ditulis permanen di `.env` (lihat `.env.example` untuk daftar lengkap + penjelasan tiap opsi). Untuk peta teknik → file kode → env var secara terprogram, lihat komentar di `src/techniques/index.ts`.

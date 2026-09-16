@@ -114,6 +114,20 @@ function getStorageStateOption(): string | undefined {
 // Captured once via the real browser navigation, then reused verbatim for lightweight HTTP calls.
 const PDP_REQUEST_URL_FRAGMENT = "/api/v4/pdp/get_";
 
+// "auto": try the fast/simple "direct" page.goto() first; only pay click-navigation's extra
+// latency (an extra homepage hop + injected click) if direct comes back with no usable item.
+// Distinct from isClickNavigationEnabled()/isWarmupEnabled(), which are read fresh each call
+// via process.env (those two remain mutually-exclusive toggles); "auto" is a third top-level
+// mode handled by bootstrap() itself rather than by navigationWarmup.ts/clickNavigation.ts.
+const NAVIGATION_STRATEGY = process.env.NAVIGATION_STRATEGY || "direct";
+
+// Minimal, local duplicate of shopee.client.ts's isUsableProduct() check — not imported from
+// there to avoid a circular import (shopee.client.ts imports sessionManager from this file).
+function isUsableCapturedResponse(data: unknown): boolean {
+  const d = data as { data?: { item?: unknown }; error?: unknown } | null;
+  return Boolean(d && d.data && d.data.item && !d.error);
+}
+
 function sessionKey(params: ShopeeProductParams): string {
   return `${params.storeId}:${params.dealId}`;
 }
@@ -310,10 +324,34 @@ class SessionManager {
   }
 
   private async bootstrap(params: ShopeeProductParams): Promise<ShopeeSession> {
+    if (NAVIGATION_STRATEGY === "auto") {
+      // Try the fast/simple path first (direct page.goto()); only pay the extra latency of
+      // click-navigation (an extra homepage hop + injected click) if direct comes back with
+      // no usable item or hits the traffic-verification wall. Neither strategy has been
+      // proven better than the other for a genuinely fresh shopee.tw guest session — this
+      // just avoids paying click-navigation's cost on requests where direct already works.
+      try {
+        const direct = await this.attemptBootstrap(params, false);
+        if (isUsableCapturedResponse(direct.capturedResponse)) return direct;
+        logger.info({ params }, "Direct navigation bootstrap returned no usable item, falling back to click-navigation");
+      } catch (err) {
+        if (err instanceof ScrapeError && err.type === "TRAFFIC_VERIFICATION") throw err; // already tripped the breaker, don't retry
+        logger.info(
+          { params, message: err instanceof Error ? err.message : String(err) },
+          "Direct navigation bootstrap failed, falling back to click-navigation"
+        );
+      }
+      return this.attemptBootstrap(params, true);
+    }
+
+    return this.attemptBootstrap(params, isClickNavigationEnabled());
+  }
+
+  private async attemptBootstrap(params: ShopeeProductParams, useClickNav: boolean): Promise<ShopeeSession> {
     const key = sessionKey(params);
     const previousRefreshCount = this.cache.get(key)?.refreshCount ?? 0;
     logger.info(
-      { params, persistentProfile: PERSISTENT_PROFILE, authMode: AUTH_MODE, refreshCount: previousRefreshCount + 1 },
+      { params, persistentProfile: PERSISTENT_PROFILE, authMode: AUTH_MODE, useClickNav, refreshCount: previousRefreshCount + 1 },
       "Bootstrapping fresh Shopee session via headless browser"
     );
     let context: BrowserContext | null = null;
@@ -352,7 +390,7 @@ class SessionManager {
         await warmupHomepage(p, SHOPEE_DOMAIN);
       }
 
-      if (isClickNavigationEnabled()) {
+      if (useClickNav) {
         // Technique: reach the exact target via a genuine clicked navigation instead of a
         // bare page.goto() — validated empirically to matter (see README). Requires landing
         // on some page first so there's a document to inject the link into.
