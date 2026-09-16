@@ -17,8 +17,8 @@
  *      see ./browserEngine.ts
  *   3. Penanganan interstitial bahasa     → always applied (cheap, no downside)
  *      see ./languageInterstitial.ts
- *   7*. Navigasi warm-up                  → NAVIGATION_STRATEGY=warmup|direct
- *      see ./navigationWarmup.ts
+ *   7*. Navigasi warm-up                  → NAVIGATION_STRATEGY=warmup|direct|click
+ *      see ./navigationWarmup.ts, ./clickNavigation.ts
  *   8. Fallback endpoint get_pc→get_rw    → always applied (cheap, no downside)
  *      see ./fallbackEndpoint.ts
  *   9. Resource blocking                  → BLOCK_STATIC_ASSETS=true|false
@@ -33,6 +33,7 @@
 export { createBrowserEngine, getConfiguredBrowserEngine, type BrowserEngine } from "./browserEngine";
 export { applyLanguageCookies, dismissLanguageInterstitial } from "./languageInterstitial";
 export { warmupHomepage, isWarmupEnabled } from "./navigationWarmup";
+export { navigateViaClick, isClickNavigationEnabled } from "./clickNavigation";
 export { blockStaticAssets, isResourceBlockingEnabled } from "./resourceBlocking";
 export { isTrafficVerificationWall } from "./trafficWallDetector";
 export { CircuitBreaker } from "./circuitBreaker";

@@ -9,6 +9,8 @@ import {
   dismissLanguageInterstitial,
   warmupHomepage,
   isWarmupEnabled,
+  navigateViaClick,
+  isClickNavigationEnabled,
   blockStaticAssets,
   isResourceBlockingEnabled,
   isTrafficVerificationWall,
@@ -350,9 +352,22 @@ class SessionManager {
         await warmupHomepage(p, SHOPEE_DOMAIN);
       }
 
-      await p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((err) => {
-        throw new ScrapeError("BROWSER_FAILURE", `page.goto failed: ${(err as Error).message}`);
-      });
+      if (isClickNavigationEnabled()) {
+        // Technique: reach the exact target via a genuine clicked navigation instead of a
+        // bare page.goto() — validated empirically to matter (see README). Requires landing
+        // on some page first so there's a document to inject the link into.
+        await p.goto(`https://${SHOPEE_DOMAIN}/`, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((err) => {
+          throw new ScrapeError("BROWSER_FAILURE", `page.goto (homepage for click-navigation) failed: ${(err as Error).message}`);
+        });
+        await dismissLanguageInterstitial(p);
+        await navigateViaClick(p, url).catch((err) => {
+          throw new ScrapeError("BROWSER_FAILURE", `navigateViaClick failed: ${(err as Error).message}`);
+        });
+      } else {
+        await p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((err) => {
+          throw new ScrapeError("BROWSER_FAILURE", `page.goto failed: ${(err as Error).message}`);
+        });
+      }
 
       // Technique #3 fallback: dismiss the interstitial if it still appeared.
       await dismissLanguageInterstitial(p);
