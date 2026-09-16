@@ -555,6 +555,16 @@ A consolidated recap of everything standing between this project and a fully rel
 | 8 | Fresh persistent profile (not storageState) | Failed |
 | 9 | Click-navigation + organic warmup (replicated via production code) | Not reliably reproducible |
 
+**All three real live successes this project ever achieved followed the exact same pattern — one success, in a "clean" state, then no more:**
+
+| # | Where | Mode | What happened |
+|---|---|---|---|
+| 1 | `shopee.tw` | Guest, no login, plain `page.goto()` | Succeeded once at the very start of the project, before any volume testing — the same item then never succeeded again after the first load test |
+| 2 | `shopee.co.id` | Login + persistent profile, organic search-then-click | Succeeded once (the first breakthrough) |
+| 3 | `shopee.co.id` | Login + persistent profile, deterministic injected-link click | Succeeded once, on a different pre-specified item |
+
+The common thread across all three, on both `.tw` and `.co.id`: success happened exactly once, in a session/account state that hadn't yet accumulated automated-activity signal, and did not hold up under repeated use — regardless of guest vs. login, or which navigation technique was used. This is the strongest evidence behind blocker #5 below.
+
 **3. Local network blockers (environment-specific):** DNS hijacking (ISP redirects `shopee.tw` resolution to its own block-page IP) plus SNI-based DPI blocking (TLS reset right after `ClientHello`, even with the real IP forced) — a proxy is required here just to escape the local network, independent of anything Shopee-side.
 
 **4. Access/account blockers:** Shopee accounts are region-specific (a Taiwan phone number is required for a `shopee.tw` account) — this project only had an Indonesian account available, so `AUTH_MODE=login`/persistent-profile testing could never be validated directly against the actual `shopee.tw` target. Separately, guest/anonymous access is broadly restricted — confirmed via both automation and manual human browsing.

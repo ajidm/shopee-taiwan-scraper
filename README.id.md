@@ -555,6 +555,16 @@ Rekap konsolidasi semua hal yang menghalangi proyek ini mencapai scraping yang b
 | 8 | Profil persisten baru (bukan storageState) | Gagal |
 | 9 | Klik-navigasi + warmup organik (direplikasi via kode produksi) | Tidak reliable direproduksi |
 
+**Ketiga keberhasilan live nyata yang pernah dicapai proyek ini semuanya mengikuti pola yang persis sama — berhasil sekali di kondisi "bersih", lalu tidak pernah lagi:**
+
+| # | Di mana | Mode | Yang terjadi |
+|---|---|---|---|
+| 1 | `shopee.tw` | Guest, tanpa login, `page.goto()` biasa | Berhasil sekali di awal proyek, sebelum ada volume testing sama sekali — item yang sama tidak pernah berhasil lagi setelah load test pertama |
+| 2 | `shopee.co.id` | Login + profil persisten, search organik lalu klik | Berhasil sekali (terobosan pertama) |
+| 3 | `shopee.co.id` | Login + profil persisten, klik ke link suntikan deterministik | Berhasil sekali, di item lain yang ditentukan sebelumnya |
+
+Benang merah di ketiganya, baik di `.tw` maupun `.co.id`: keberhasilan terjadi tepat sekali, dalam kondisi sesi/akun yang belum terakumulasi sinyal aktivitas otomatis, dan tidak bertahan saat dipakai berulang — terlepas dari guest vs login, atau teknik navigasi apa pun yang dipakai. Ini bukti paling kuat di balik blocker #5 di bawah.
+
 **3. Blocker jaringan lokal (spesifik lingkungan):** DNS hijacking (ISP mengalihkan resolusi `shopee.tw` ke IP block-page miliknya) ditambah SNI-based DPI block (TLS diputus tepat setelah `ClientHello`, bahkan dengan IP asli dipaksa) — proxy diperlukan di sini murni untuk lolos dari jaringan lokal, terlepas dari apa pun di sisi Shopee.
 
 **4. Blocker akses/akun:** akun Shopee spesifik per region (butuh nomor telepon Taiwan untuk akun `shopee.tw`) — proyek ini cuma punya akun Indonesia, jadi pengujian `AUTH_MODE=login`/profil persisten tidak pernah bisa divalidasi langsung ke target asli `shopee.tw`. Terpisah dari itu, akses guest/anonim dibatasi luas — dikonfirmasi lewat otomasi maupun browsing manual manusia.
