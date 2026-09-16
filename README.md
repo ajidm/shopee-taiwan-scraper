@@ -464,7 +464,12 @@ Roughly a day after the CAPTCHA escalation noted above (enough time for the acco
 
 The first attempt at the homepage step showed no wall or CAPTCHA at all this time (a good sign the account had cooled down). After fixing a couple of selector issues (Shopee's search input isn't a plain `input[type="text"]`), the full chain completed end to end, clicking into a genuinely fresh product neither this project nor the tester had ever touched before (`GOOJODOQ Wireless Bluetooth 5.3 Headphones`, `shopId=1412347694`, `itemId=46755193498`).
 
-**Result: `get_pc` succeeded completely** — a full, real product payload (`"error":null`, complete `item`/`data` structure matching the target schema), the first fully successful live fetch since the very first request made at the start of this project.
+**Result: `get_pc` succeeded completely** — a full, real product payload (`"error":null`, complete `item`/`data` structure matching the target schema), the first fully successful live fetch since the very first request made at the start of this project. The console output was truncated at capture time (`.slice(0, 400)` in the throwaway test script) and the full response could not be re-fetched afterward (see the "Final confirmation" note below — the exact same item stopped succeeding by the time it was retried), so only this partial excerpt survives as evidence:
+
+```text
+status=200 body={"bff_meta":null,"error":null,"error_msg":null,"data":{"item":{"item_id":46755193498,"shop_id":1412347694,"item_status":"normal","status":1,"item_type":0,"reference_item_id":"","title":"GOOJODOQ Headphones Wireless Bluetooth 5.3 Connection Intuitive Control and Voice Assistant Weight Approximately 92g","image":"sg-11134201-8260m-mjtnvowseznr36","label_ids":[700700063,2018619,1428713,1718087960,844
+[truncated by the test script's own console.log — this is the complete surviving fragment]
+```
 
 **Important caveat — multiple variables changed at once, so this cannot be cleanly attributed to a single cause**, consistent with this project's own earlier methodological lesson (see "Methods & Experiments Tried" above): this run differed from all eight prior failed attempts in at least four ways simultaneously — (1) full click-based navigation instead of direct URL navigation, (2) a persistent profile that now had some genuine usage history rather than being freshly created, (3) roughly a day of elapsed time for the account's risk score to potentially decay, and (4) a genuinely fresh product never previously targeted by any test in this project. Any one of these — or some combination — could be the actual differentiator.
 

@@ -464,7 +464,12 @@ Sekitar satu hari setelah eskalasi CAPTCHA yang dicatat di atas (cukup waktu unt
 
 Percobaan pertama di tahap homepage sama sekali tidak menunjukkan wall atau CAPTCHA kali ini (tanda bagus akun sudah mendingin). Setelah memperbaiki beberapa masalah selector (kotak pencarian Shopee bukan `input[type="text"]` polos), seluruh rantai berhasil sampai akhir, mengklik ke produk yang benar-benar baru yang belum pernah disentuh proyek ini maupun penguji sebelumnya (`GOOJODOQ Wireless Bluetooth 5.3 Headphones`, `shopId=1412347694`, `itemId=46755193498`).
 
-**Hasil: `get_pc` berhasil sepenuhnya** — payload produk asli lengkap (`"error":null`, struktur `item`/`data` lengkap sesuai skema target), keberhasilan live penuh pertama sejak request pertama di awal proyek ini.
+**Hasil: `get_pc` berhasil sepenuhnya** — payload produk asli lengkap (`"error":null`, struktur `item`/`data` lengkap sesuai skema target), keberhasilan live penuh pertama sejak request pertama di awal proyek ini. Output console-nya terpotong saat penangkapan (`.slice(0, 400)` di skrip test sementara) dan response lengkapnya tidak bisa diambil ulang setelahnya (lihat catatan "konfirmasi final" di bawah — item yang persis sama sudah berhenti berhasil saat dicoba ulang), jadi cuma potongan ini yang tersisa sebagai bukti:
+
+```text
+status=200 body={"bff_meta":null,"error":null,"error_msg":null,"data":{"item":{"item_id":46755193498,"shop_id":1412347694,"item_status":"normal","status":1,"item_type":0,"reference_item_id":"","title":"GOOJODOQ Headphones Wireless Bluetooth 5.3 Connection Intuitive Control and Voice Assistant Weight Approximately 92g","image":"sg-11134201-8260m-mjtnvowseznr36","label_ids":[700700063,2018619,1428713,1718087960,844
+[terpotong oleh console.log skrip test itu sendiri — ini fragmen lengkap yang tersisa]
+```
 
 **Catatan penting — banyak variabel berubah sekaligus, jadi tidak bisa diatribusikan bersih ke satu penyebab**, konsisten dengan pelajaran metodologis proyek ini sendiri sebelumnya (lihat "Metode & Eksperimen yang Dicoba" di atas): run ini berbeda dari kedelapan percobaan gagal sebelumnya dalam setidaknya empat hal sekaligus — (1) navigasi berbasis klik penuh, bukan navigasi URL langsung, (2) profil persisten yang kini sudah punya sedikit histori pemakaian nyata, bukan baru dibuat, (3) sekitar satu hari waktu berlalu untuk risk score akun berpotensi meluruh, dan (4) produk yang benar-benar baru yang belum pernah ditarget test manapun di proyek ini. Salah satu dari ini — atau kombinasinya — bisa jadi pembeda sebenarnya.
 
